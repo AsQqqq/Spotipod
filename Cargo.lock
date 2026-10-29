@@ -3768,17 +3768,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "spotipod-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "env_logger",
- "log",
- "spotipod-core",
- "tokio",
-]
-
-[[package]]
 name = "spotipod-core"
 version = "0.1.0"
 dependencies = [
