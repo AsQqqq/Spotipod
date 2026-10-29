@@ -666,7 +666,7 @@ function render() {
         }
     } catch (e) {
         //! ERROR? UNCOMMENT THIS TO SHOW IT ON THE SCREEN
-        
+
         // $('title').textContent = "JS Error!";
         // const list = $('menu-list');
         // list.style.display = 'block';
@@ -718,6 +718,18 @@ function volume() {
 
 let marqueeFor = null;
 function renderNowPlaying() {
+    const track = S.playback && S.playback.track ? S.playback.track : {};
+
+    let trackName = track.name || "Unknown Track";
+    if (trackName.startsWith('spotify:track:')) {
+        trackName = "Loading...";
+    }
+
+    let artistName = track.artist || (track.artists ? track.artists.join(', ') : "Unknown Artist");
+    if (artistName.startsWith('spotify:')) {
+        artistName = "Spotify";
+    }
+
     $('menu-list').style.display = 'none';
     $('now-playing').style.display = 'flex';
     setTitle('Now Playing');

@@ -482,10 +482,24 @@ fn load_more(ctx: &Arc<Ctx>, context: String) {
 }
 
 fn track_json(t: &Track) -> Value {
+    let name = if t.name.is_empty() {
+        "Unknown Track".to_string()
+    } else if t.name.starts_with("spotify:") {
+        "Loading...".to_string()
+    } else {
+        t.name.clone()
+    };
+
+    let artist = if t.artists.is_empty() {
+        "Spotify".to_string()
+    } else {
+        t.artists.join(", ")
+    };
+
     json!({
         "uri": t.uri,
-        "name": t.name,
-        "artist": t.artists.join(", "),
+        "name": name,
+        "artist": artist,
         "album": t.album,
         "duration_ms": t.duration_ms,
     })
