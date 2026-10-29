@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["crates/spotipod-core", "apps/spotipod-cli", "apps/spotipod-gui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "PolyForm-Noncommercial-1.0.0"
+repository = "https://github.com/AsQqqq/SpotiPOD"
+
+[workspace.dependencies]
+spotipod-core = { path = "crates/spotipod-core" }
+librespot = { version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-std", "io-util", "signal"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+directories = "6"
+anyhow = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

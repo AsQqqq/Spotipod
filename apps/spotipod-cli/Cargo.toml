@@ -1,0 +1,18 @@
+[package]
+name = "spotipod-cli"
+description = "Bare-bones CLI for exercising spotipod-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "spotipod"
+path = "src/main.rs"
+
+[dependencies]
+spotipod-core.workspace = true
+tokio.workspace = true
+log.workspace = true
+env_logger.workspace = true
+anyhow.workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "spotipod-gui"
+description = "iPod Classic UI for spotipod-core (webview)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "spotipod-gui"
+path = "src/main.rs"
+
+[dependencies]
+spotipod-core.workspace = true
+tokio.workspace = true
+log.workspace = true
+env_logger.workspace = true
+serde.workspace = true
+serde_json = "1"
+tao = "0.37"
+wry = "0.57"
