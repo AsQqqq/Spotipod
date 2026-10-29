@@ -70,7 +70,7 @@
             opacity: 0.6;
         }
 
-        .ipod-screen.svelte-4kg78n { position: relative; margin: 30px auto 0; width: 273px; height: 223px; background-image: linear-gradient(135deg, #a5a59b, #d6d5d0); border-radius: 10px; box-shadow: inset 0 0 10px 2px #4d4d4d; font-size: 22px; line-height: 1; color: #484647; border: 8px solid rgba(0, 0, 0, 0.5); box-sizing: content-box; pointer-events: none; }
+        .ipod-screen.svelte-4kg78n { position: relative; margin: 30px auto 0; width: 273px; height: 223px; background-image: linear-gradient(135deg, #a5a59b, #d6d5d0); border-radius: 10px; box-shadow: inset 0 0 10px 2px #4d4d4d; font-size: 22px; line-height: 1; color: #484647; border: 8px solid rgba(0, 0, 0, 0.5); box-sizing: content-box; pointer-events: none; overflow: hidden; }
         @media(prefers-color-scheme: dark) { .ipod-screen.svelte-4kg78n { --ipod-screen-opacity: 0.85; } }
         @media(prefers-contrast: more) { .ipod-screen.svelte-4kg78n { color: black; } }
         .ipod-screen.svelte-4kg78n::before, .ipod-screen.svelte-4kg78n::after { content: ""; position: absolute; display: block; top: 50%; left: 50%; transform: translate(-50%, -50%); pointer-events: none; z-index: 1; }
@@ -211,10 +211,17 @@
         .now-playing-index[hidden] { visibility: hidden; }
         .volume-icon { width: 18px; height: 16px; }
 
-        @keyframes slideInRight { from { transform: translateX(100%); } to { transform: translateX(0); } }
-        @keyframes slideInLeft { from { transform: translateX(-100%); } to { transform: translateX(0); } }
-        .slide-right { animation: slideInRight 0.2s ease-out; }
-        .slide-left { animation: slideInLeft 0.2s ease-out; }
+        @keyframes slideInRight { 
+            from { transform: translateX(100%); } 
+            to { transform: translateX(0); } 
+        }
+        @keyframes slideInLeft { 
+            from { transform: translateX(-100%); } 
+            to { transform: translateX(0); } 
+        }
+
+        .slide-right { animation: slideInRight 0.2s ease-out forwards; }
+        .slide-left { animation: slideInLeft 0.2s ease-out forwards; }
     </style>
 </head>
 <body>
@@ -415,6 +422,14 @@ function menu(id) {
             { label: 'Backlight Timer', next: 'backlight' },
             { label: 'Clicker', value: s.clicker ? 'On' : 'Off', act: () => setSettings({ clicker: !s.clicker }) },
             { label: 'Reset All Settings', next: 'reset' },
+            { label: 'Log Out', next: 'logout' },
+        ]) };
+    case 'logout':
+        return { title: 'Log Out', ...rows([
+            { label: 'Cancel', act: back },
+            { label: 'Log Out', act: () => {
+                send({ cmd: 'logout' });
+            } },
         ]) };
     case 'about': {
         const a = S.about;
@@ -447,11 +462,9 @@ function menu(id) {
         return { title: 'Log Out', ...rows([
             { label: 'Cancel', act: back },
             { label: 'Yes, log out', act: () => {
-                // Прячем интерфейс (имитация выключения)
                 $('screen').style.visibility = 'hidden'; 
-                // Ждем 1.5 секунды, затем отправляем логаут
                 setTimeout(() => {
-                    send({ cmd: 'logout' }); // backend.rs переведет фазу в need_login[cite: 3]
+                    send({ cmd: 'logout' });
                     $('screen').style.visibility = 'visible';
                 }, 1500);
             } },
@@ -481,23 +494,38 @@ function push(id) {
     if (id === 'output') send({ cmd: 'refresh_outputs' });
     stack.push({ id, sel, top: 0 });
     
-    const list = $('menu-list');
-    list.classList.remove('slide-right', 'slide-left');
-    void list.offsetWidth; // Принудительный reflow для перезапуска анимации
-    list.classList.add('slide-right');
+    const screenBody = document.querySelector('.screen-body');
+    if (screenBody) {
+        screenBody.classList.remove('slide-right', 'slide-left');
+        void screenBody.offsetWidth;
+        screenBody.classList.add('slide-right');
+    }
     
     render();
 }
 
 function back() {
-    if (view === 'now_playing') { view = 'menu'; render(); return; }
-    if ( stack.length > 1 ) { 
+    if (view === 'now_playing') { 
+        view = 'menu'; 
+        const screenBody = document.querySelector('.screen-body');
+        if (screenBody) {
+            screenBody.classList.remove('slide-right', 'slide-left');
+            void screenBody.offsetWidth;
+            screenBody.classList.add('slide-left');
+        }
+        render(); 
+        return; 
+    }
+    
+    if (stack.length > 1) { 
         stack.pop();
         
-        const list = $('menu-list');
-        list.classList.remove('slide-right', 'slide-left');
-        void list.offsetWidth; // Принудительный reflow для перезапуска анимации
-        list.classList.add('slide-left');
+        const screenBody = document.querySelector('.screen-body');
+        if (screenBody) {
+            screenBody.classList.remove('slide-right', 'slide-left');
+            void screenBody.offsetWidth;
+            screenBody.classList.add('slide-left');
+        }
         
         render(); 
     }
@@ -525,11 +553,14 @@ function rotate(steps) {
     }
     const t = cur();
     const m = menu(t.id);
-    const sel = Math.max(0, Math.min(m.count - 1, t.sel + steps));
-    if (sel === t.sel) return;
-    t.sel = sel;
-    click();
-    render();
+    
+    const newSel = Math.max(0, Math.min(m.count - 1, t.sel + steps));
+    
+    if (newSel !== t.sel) {
+        t.sel = newSel;
+        click();
+        render();
+    }
 }
 
 function setSettings(patch) {
@@ -542,7 +573,6 @@ function playFrom(context, index) {
     send({ cmd: 'play', context, index });
     playedFrom = context;
     const t = lists[context].tracks[index];
-    // Show the chosen track right away; Spotify's state follows.
     S.playback = { ...S.playback, status: 'playing', track: t, position_ms: 0 };
     receivedAt = performance.now();
     showNowPlaying();
@@ -551,77 +581,111 @@ function playFrom(context, index) {
 function showNowPlaying() {
     view = 'now_playing';
     setMode('progress');
+
+    const screenBody = document.querySelector('.screen-body');
+    if (screenBody) {
+        screenBody.classList.remove('slide-right', 'slide-left');
+        void screenBody.offsetWidth;
+        screenBody.classList.add('slide-right');
+    }
+    
     render();
 }
 
 // --- Rendering ---
 function render() {
-    // const booting = S.phase !== 'ready' && S.phase !== 'need_login';
-    const needsLogin = S.phase === 'need_login';
-    const booting = S.phase !== 'ready' && !needsLogin;
-    
-    $('boot').style.display = (S.phase === 'ready') ? 'none' : 'flex'; 
-    $('auth-error').style.display = needsLogin ? 'block' : 'none';
-    $('boot-progress').textContent = S.progress;
-    $('boot-spinner').style.display = booting ? '' : 'none';
+    try {
+        const isReady = (S.phase === 'ready');
+        const needsLogin = (S.phase === 'need_login');
+        
+        $('boot').style.display = isReady ? 'none' : 'flex';
+        $('auth-error').style.display = needsLogin ? 'block' : 'none';
 
-    if (booting || needsLogin) return;
-
-    renderTitleBar();
-    if (view === 'now_playing') { renderNowPlaying(); return; }
-
-    $('now-playing').style.display = 'none';
-    const list = $('menu-list');
-    list.style.display = 'block';
-    const t = cur();
-    const m = menu(t.id);
-    setTitle(m.title);
-    t.sel = Math.max(0, Math.min(t.sel, m.count - 1));
-    if (t.sel < t.top) t.top = t.sel;
-    if (t.sel >= t.top + ROWS) t.top = t.sel - ROWS + 1;
-    t.top = Math.max(0, Math.min(t.top, m.count - ROWS));
-
-    list.textContent = '';
-    for (let i = t.top; i < Math.min(m.count, t.top + ROWS); i++) {
-        const item = m.item(i);
-        const li = document.createElement('li');
-        li.className = 'menu-item svelte-v01lnd' + (i === t.sel && !m.info && !item.info ? ' selected' : '');
-        if (m.info || item.info) li.dataset.action = 'info';
-        const title = document.createElement('span');
-        title.className = 'item-title svelte-v01lnd';
-        title.textContent = item.label;
-        li.appendChild(title);
-        if (item.value !== undefined) {
-            const v = document.createElement('span');
-            v.className = 'item-value svelte-v01lnd';
-            v.textContent = item.value;
-            li.appendChild(v);
-        } else if (item.next) {
-            const c = document.createElement('span');
-            c.className = 'chevron svelte-v01lnd';
-            li.appendChild(c);
+        const menuTitle = document.querySelector('.menu-title');
+        if (menuTitle) {
+            menuTitle.style.display = isReady ? 'block' : 'none';
         }
-        li.addEventListener('click', () => { t.sel = i; select(); });
-        list.appendChild(li);
-    }
+        
+        $('now-playing').style.display = 'none';
+        const list = $('menu-list');
+        
+        renderTitleBar();
+        if (view === 'now_playing') { renderNowPlaying(); return; }
 
-    // Next batch while scrolling.
-    if (m.context) {
-        const l = lists[m.context];
-        if (!l.done && !l.requested && t.sel + PREFETCH >= l.tracks.length) {
-            l.requested = true;
-            send({ cmd: 'more', context: m.context });
+        if (!isReady) {
+            if (list) list.style.display = 'none';
+            if (nowPlayingEl) nowPlayingEl.style.display = 'none';
+            return;
         }
+        
+        if (!stack || stack.length === 0) {
+            stack = [{ id: 'home', sel: 0, top: 0 }];
+        }
+        
+        const t = cur();
+        if (!t) return;
+        
+        const m = menu(t.id);
+        setTitle(m.title);
+
+        t.sel = Math.max(0, Math.min(t.sel, m.count - 1));
+        if (t.sel < t.top) t.top = t.sel;
+        if (t.sel >= t.top + ROWS) t.top = t.sel - ROWS + 1;
+        t.top = Math.max(0, Math.min(t.top, m.count - ROWS));
+
+        list.innerHTML = '';
+        list.style.display = 'block';
+        list.style.transform = 'none';
+        list.style.opacity = '1';
+        list.style.visibility = 'visible';
+
+        for (let i = t.top; i < Math.min(m.count, t.top + ROWS); i++) {
+            const item = m.item(i);
+            const li = document.createElement('li');
+            li.className = 'menu-item svelte-v01lnd' + (i === t.sel && !m.info && !item.info ? ' selected' : '');
+            if (m.info || item.info) li.dataset.action = 'info';
+
+            const title = document.createElement('span');
+            title.className = 'item-title svelte-v01lnd';
+            title.textContent = item.label;
+            li.appendChild(title);
+
+            if (item.value !== undefined) {
+                const v = document.createElement('span');
+                v.className = 'item-value svelte-v01lnd';
+                v.textContent = item.value;
+                li.appendChild(v);
+            } else if (item.next) {
+                const c = document.createElement('span');
+                c.className = 'chevron svelte-v01lnd';
+                li.appendChild(c);
+            }
+
+            li.addEventListener('click', () => { t.sel = i; select(); });
+            list.appendChild(li);
+        }
+    } catch (e) {
+        //! ERROR? UNCOMMENT THIS TO SHOW IT ON THE SCREEN
+        
+        // $('title').textContent = "JS Error!";
+        // const list = $('menu-list');
+        // list.style.display = 'block';
+        // list.style.transform = 'none';
+        // list.innerHTML = `<li class="menu-item svelte-v01lnd selected"><span class="item-title svelte-v01lnd" style="font-size: 14px; white-space: normal;">${e.message}</span></li>`;
     }
 }
 
 function setTitle(text) {
-    const el = $('title');
-    el.classList.toggle('toast', !!toast);
-    if (!toast && text === 'iPod') {
-        el.innerHTML = '<img src="asset://localhost/assets/spotipod.svg" alt="SpotiPod" style="height: 20px; vertical-align: middle;">';
-    } else {
-        el.textContent = toast || text;
+    try {
+        const el = $('title');
+        el.classList.toggle('toast', !!toast);
+        if (!toast && text === 'iPod') {
+            el.innerHTML = '<img src="asset://localhost/assets/spotipod.svg" alt="SpotiPod" style="height: 20px; vertical-align: middle;">';
+        } else {
+            el.textContent = toast || text;
+        }
+    } catch (e) {
+        $('title').textContent = "Title Error";
     }
 }
 
@@ -748,7 +812,7 @@ function receive(msg) {
     if (msg.type === 'state') {
         const wasPhase = S.phase;
         const now = performance.now();
-        if (msg.status && msg.status !== S.status) showToast(msg.status);
+        // if (msg.status && msg.status !== S.status) showToast(msg.status);
         Object.assign(S, {
             phase: msg.phase, progress: msg.progress, status: msg.status,
             settings: msg.settings, about: msg.about, outputs: msg.outputs,
@@ -817,32 +881,25 @@ function wakeBacklightIfNeeded() {
 }
 
 // --- Clicker ---
-// let audioCtx = null;
-// function click() {
-//     if (!S.settings.clicker) return;
-//     try {
-//         audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-//         if (audioCtx.state === 'suspended') audioCtx.resume();
-//         const t = audioCtx.currentTime;
-//         const osc = audioCtx.createOscillator();
-//         const gain = audioCtx.createGain();
-//         osc.type = 'square';
-//         osc.frequency.setValueAtTime(150, t);
-//         osc.frequency.exponentialRampToValueAtTime(80, t + 0.015);
-//         gain.gain.setValueAtTime(0.1, t);
-//         gain.gain.exponentialRampToValueAtTime(0.001, t + 0.015);
-//         osc.connect(gain);
-//         gain.connect(audioCtx.destination);
-//         osc.start(t);
-//         osc.stop(t + 0.015);
-//     } catch (_) { /* no audio */ }
-// }
+const clickAudioTemplate = new Audio('asset://localhost/ipod_/ui_.mp3');
+clickAudioTemplate.load();
+let lastClickTime = 0;
+const CLICK_COOLDOWN = 50;
 
-const scrollSound = new Audio('asset://localhost/assets/ui_.mp3');
 function click() {
     if (!S.settings.clicker) return;
-    scrollSound.currentTime = 0;
-    scrollSound.play().catch(() => {});
+    
+    const now = performance.now();
+    if (now - lastClickTime < CLICK_COOLDOWN) {
+        return;
+    }
+    lastClickTime = now;
+
+    try {
+        const sound = clickAudioTemplate.cloneNode();
+        sound.currentTime = 0;
+        sound.play().catch(() => {});
+    } catch (_) { /* no audio */ }
 }
 
 // --- Input ---
@@ -900,8 +957,27 @@ window.addEventListener('wheel', input(e => {
 // Keyboard.
 window.addEventListener('keydown', input(e => {
     switch (e.key) {
-    case 'ArrowUp': rotate(-1); break;
-    case 'ArrowDown': rotate(1); break;
+    case 'ArrowUp': 
+        if (view === 'menu' && cur()) {
+            const t = cur();
+            if (t.sel > 0) {
+                t.sel--;
+                click();
+                render();
+            }
+        }
+        break;
+    case 'ArrowDown': 
+        if (view === 'menu' && cur()) {
+            const t = cur();
+            const m = menu(t.id);
+            if (t.sel < m.count - 1) {
+                t.sel++;
+                click();
+                render();
+            }
+        }
+        break;
     case 'Enter': ; select(); break;
     case 'Escape': case 'Backspace': back(); break;
     case ' ': send({ cmd: 'play_pause' }); break;
