@@ -236,7 +236,31 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Cmd>, sink: Sink) {
                     Ok(Event::CommandFailed(e)) => ctx.status(format!("error: {e}")),
                     _ => {}
                 }
-                let state = sp.state();
+                let mut state = sp.state();
+                
+                // Если у текущего трека имя неполное или техническое, ищем его в наших локальных списках
+                if let Some(ref mut track) = state.track {
+                    let uri = track.uri.clone();
+                    if track.name.is_empty() || track.name.starts_with("spotify:") || track.name == "Loading..." || track.name.starts_with("Track ") {
+                        let d = ctx.data.lock().unwrap();
+                        let mut found_track = None;
+                        
+                        for list in d.lists.values() {
+                            if let Some(t) = list.tracks.iter().find(|t| t.uri == uri) {
+                                found_track = Some(t.clone());
+                                break;
+                            }
+                        }
+                        
+                        if let Some(t) = found_track {
+                            track.name = t.name;
+                            track.artists = t.artists;
+                            track.album = t.album;
+                            track.cover_url = t.cover_url;
+                        }
+                    }
+                }
+
                 ctx.update(|d| d.playback = state);
             }
         }

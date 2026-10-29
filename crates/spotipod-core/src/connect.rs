@@ -280,17 +280,40 @@ fn player_state(
         .filter(|t| !uri.is_empty() && t.uri == uri)
         .cloned();
     let resolve = (known.is_none() && !uri.is_empty()).then(|| uri.clone());
+    
     let track = known.or_else(|| {
         (!uri.is_empty()).then(|| {
             let meta = &ps.track.metadata;
+            
+            // Ищем название по всем возможным ключам от Spotify Connect
+            let name = meta.get("title")
+                .or_else(|| meta.get("name"))
+                .or_else(|| meta.get("track_name"))
+                .or_else(|| meta.get("item_title"))
+                .cloned()
+                .filter(|s| !s.is_empty() && !s.starts_with("spotify:"))
+                .unwrap_or_else(|| "Loading...".to_string()); // Чистый статус загрузки вместо ID
+
+            let artist = meta.get("artist_name")
+                .or_else(|| meta.get("artist"))
+                .or_else(|| meta.get("artists"))
+                .cloned()
+                .unwrap_or_else(|| "Spotify".to_string());
+
+            let album = meta.get("album_title")
+                .or_else(|| meta.get("album"))
+                .or_else(|| meta.get("album_name"))
+                .cloned()
+                .unwrap_or_default();
+
             Track {
                 id: uri.rsplit(':').next().map(str::to_owned),
-                name: meta.get("title").cloned().unwrap_or_else(|| uri.clone()),
-                artists: meta.get("artist_name").cloned().into_iter().collect(),
-                album: meta.get("album_title").cloned().unwrap_or_default(),
+                name,
+                artists: vec![artist],
+                album,
                 duration_ms,
                 cover_url: None,
-                uri,
+                uri: uri.clone(),
             }
         })
     });
@@ -301,7 +324,7 @@ fn player_state(
         (true, true, _) => Status::Paused,
         _ => Status::Stopped,
     };
-    // Position is reported as of `timestamp`; extrapolate to now while playing.
+
     let mut position = ps.position_as_of_timestamp.max(0);
     if status == Status::Playing {
         let now_ms = SystemTime::now()
@@ -316,8 +339,7 @@ fn player_state(
     };
     let mut position_ms = (position.min(u32::MAX as i64) as u32).min(max);
     let mut position_at = Instant::now();
-    // Unrelated cluster updates re-report the position with clock jitter: keep the running
-    // clock unless the device really moved (seek, stall).
+
     if let Some(p) = prev.filter(|p| {
         status == Status::Playing
             && p.status == Status::Playing
@@ -354,19 +376,25 @@ async fn fill_track(
     uri: String,
 ) {
     let Ok(parsed) = SpotifyUri::from_uri(&uri) else {
+        log::warn!("fill_track: bad uri {uri}");
         return;
     };
-    let Some(track) = resolve_track(&session, parsed).await else {
-        return;
+    
+    // Пытаемся получить трек, если падает — логируем причину
+    let track = match resolve_track(&session, parsed).await {
+        Some(t) => t,
+        None => {
+            log::warn!("fill_track: failed to resolve metadata for {uri}");
+            return;
+        }
     };
+
     {
         let mut v = view.write().unwrap();
         let Some(player) = v.player.as_mut() else {
             return;
         };
-        if player.track.as_ref().is_none_or(|t| t.uri != uri) {
-            return;
-        }
+        // Принудительно обновляем трек
         player.track = Some(track);
     }
     let _ = events.send(Event::StateChanged);
