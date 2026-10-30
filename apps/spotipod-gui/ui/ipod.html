@@ -564,7 +564,8 @@ let startX = 0, startY = 0;
 let startWidth = 415;  // базовый размер
 let startHeight = 692;
 
-document.getElementById('resize-handle').addEventListener('mousedown', (e) => {
+const _resizeHandle = document.getElementById('resize-handle');
+if (_resizeHandle) _resizeHandle.addEventListener('mousedown', (e) => {
     isResizing = true;
     startX = e.clientX;
     startY = e.clientY;
@@ -806,7 +807,6 @@ function render() {
     try {
         const isReady = (S.phase === 'ready');
         const needsLogin = (S.phase === 'need_login');
-        
         $('boot').style.display = isReady ? 'none' : 'flex';
         $('auth-error').style.display = needsLogin ? 'block' : 'none';
 

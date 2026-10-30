@@ -330,15 +330,14 @@ async fn preload(ctx: &Ctx, sp: &Spotipod, library: &Library) {
     ctx.progress(format!("{check}Songs"));
     if let Some(liked) = ctx.report(sp.liked_songs_uri()) {
         ctx.data.lock().unwrap().liked = Some(liked.clone());
-        if let Some(list) = ctx.report(fetch_list(library, "Songs".into(), &liked).await) {
+        if let Ok(count) = library.liked_count().await {
             ctx.update(|d| {
                 d.about = Some(About {
-                    songs: list.uris.len() as u32,
+                    songs: count,
                     company: spotipod_core::settings::COMPANY,
                     author: spotipod_core::settings::AUTHOR,
                     version: spotipod_core::settings::VERSION,
                 });
-                d.lists.insert(liked, list);
             });
         }
     }

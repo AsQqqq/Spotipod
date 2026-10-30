@@ -15,6 +15,7 @@ use tao::{
     window::WindowBuilder,
 };
 use wry::WebViewBuilder;
+use wry::PageLoadEvent;
 
 const PAGE: &str = include_str!("../ui/ipod.html");
 /// Waits this long for a clean stop (cache save, Connect unregister) on close.
@@ -41,15 +42,24 @@ fn main() -> wry::Result<()> {
 
     let quit_proxy = event_loop.create_proxy();
 
-    let (tx, done) = backend::spawn(Box::new(move |msg| _ = proxy.send_event(msg)));
+    let proxy_for_backend = proxy.clone();
+    let (tx, done) = backend::spawn(Box::new(move |msg| _ = proxy_for_backend.send_event(msg)));
 
     let ipc_tx = tx.clone();
+    let ipc_tx_for_loop = ipc_tx.clone();
 
     let window_for_ipc = window.clone();
+
+    let proxy_for_ipc = proxy.clone();
 
     let builder = WebViewBuilder::new()
         .with_html(PAGE)
         .with_background_color((0, 0, 0, 0))
+        .with_on_page_load_handler(move |event, _url| {
+            if matches!(event, PageLoadEvent::Finished) {
+                let _ = proxy_for_ipc.send_event("__page_loaded__".to_string());
+            }
+        })
 
         .with_custom_protocol("asset".into(), move |_, request| {
             let path = request.uri().path().trim_start_matches('/');
@@ -127,9 +137,15 @@ fn main() -> wry::Result<()> {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::UserEvent(msg) => {
+                if msg == "__page_loaded__" {
+                    let _ = ipc_tx_for_loop.send(Cmd::Ready);
+                    return;
+                }
                 let js = format!("window.ipod && ipod.receive({msg})");
                 if let Err(e) = webview.evaluate_script(&js) {
                     log::warn!("ui update failed: {e}");
+                } else {
+                    log::info!("eval ok");
                 }
 
                 if msg.contains("drag_window") {
@@ -142,11 +158,6 @@ fn main() -> wry::Result<()> {
                     _ = done.recv_timeout(QUIT_TIMEOUT);
                     *control_flow = ControlFlow::Exit;
                     return;
-                }
-                
-                let js = format!("window.ipod && ipod.receive({msg})");
-                if let Err(e) = webview.evaluate_script(&js) {
-                    log::warn!("ui update failed: {e}");
                 }
             }
             Event::WindowEvent {

@@ -315,13 +315,16 @@ impl Library {
     /// All URIs in the collection set (tracks and albums mixed).
     async fn collection_uris(&self) -> Result<Vec<SpotifyUri>> {
         let mut out = Vec::new();
-        let mut token = String::new();
+        let mut token: Option<String> = None;
         loop {
             let mut req = PageRequest::new();
             req.username = self.session.username();
             req.set = COLLECTION_SET.into();
-            req.pagination_token = token;
+            if let Some(ref t) = token {
+                req.pagination_token = t.clone();
+            }
             req.limit = COLLECTION_PAGE;
+            
             let raw = self
                 .collection_request("/collection/v2/paging", &req)
                 .await?;
@@ -336,7 +339,7 @@ impl Library {
             if page.next_page_token.is_empty() {
                 break;
             }
-            token = page.next_page_token;
+            token = Some(page.next_page_token);
         }
         Ok(out)
     }
@@ -351,7 +354,7 @@ impl Library {
             .write_to_bytes()
             .map_err(|e| CoreError::Library(e.to_string()))?;
         let token = self.session.login5().auth_token().await?;
-        let mut req = http::Request::post(url)
+        let mut req = http::Request::post(&url)
             .header(CONTENT_TYPE, "application/x-protobuf")
             .header(ACCEPT, "application/x-protobuf")
             .header(
@@ -360,12 +363,20 @@ impl Library {
             )
             .body(Bytes::from(body))
             .map_err(|e| CoreError::Library(e.to_string()))?;
-        if let Ok(ct) = spclient.client_token().await
-            && let Ok(v) = http::HeaderValue::from_str(&ct)
-        {
-            req.headers_mut().insert("client-token", v);
+
+        if let Ok(ct) = spclient.client_token().await {
+            if let Ok(v) = http::HeaderValue::from_str(&ct) {
+                req.headers_mut().insert("client-token", v);
+            }
         }
-        Ok(self.session.http_client().request_body(req).await?)
+
+        match self.session.http_client().request_body(req).await {
+            Ok(bytes) => Ok(bytes),
+            Err(e) => {
+                log::error!("collection_request to {url} failed: {e:?}");
+                Err(e.into())
+            }
+        }
     }
 
     async fn resolve_uris(&self, uris: Vec<SpotifyUri>) -> Vec<Track> {
