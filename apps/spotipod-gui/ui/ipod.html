@@ -26,22 +26,15 @@
             height: 15px;
             border-radius: 50%;
             border: none;
-            cursor: pointer;
             padding: 0;
         }
 
         .win-btn.close {
-            background-color: #ff5f56;
-            border: 0.5px solid #e0443e;
+            background-color: rgba(17, 34, 51, 0);
         }
 
         .win-btn.minimize {
-            background-color: #ffbd2e;
-            border: 0.5px solid #dea123;
-        }
-
-        .win-btn:hover {
-            opacity: 0.8;
+            background-color: rgba(17, 34, 51, 0);
         }
 
         body {
@@ -80,6 +73,7 @@
             container-name: ipod;
             width: 100%;
             max-width: 450px; /* Constraints for desktop view */
+            transform: translateY(50px);
         }
         
         *, *:before, *:after { box-sizing: inherit; }
@@ -355,6 +349,184 @@
         .menu-title {
             display: none;
         }
+
+        .animation-button-off {
+            background-color: rgb(255, 255, 255);
+            width: 30px;
+            z-index: 90;
+            height: 5px;
+            position: absolute;
+            top: -22px;
+            left: 290px;
+            transition: all 0.1s ease-in-out;
+        }
+
+        .animation-button-off:hover {
+            height: 9px;
+            top: -26px;
+            cursor: pointer;
+            background-color: #ffb3b3;
+        }
+
+        .animation-button-minimize {
+            background-color: rgb(255, 255, 255);
+            width: 30px;
+            z-index: 90;
+            height: 5px;
+            position: absolute;
+            top: -22px;
+            left: 320px;
+            transition: all 0.1s ease-in-out;
+        }
+
+        .animation-button-minimize:hover {
+            height: 9px;
+            top: -26px;
+            cursor: pointer;
+            background-color: #f9ffb3;
+        }
+
+        .animation-button-aux {
+            background-color: rgb(255, 255, 255);
+            width: 40px;
+            z-index: 90;
+            height: 5px;
+            position: absolute;
+            top: -22px;
+            left: 110px;
+            transition: all 0.1s ease-in-out;
+        }
+
+        .animation-button-aux:hover {
+            height: 9px;
+            top: -26px;
+            cursor: pointer;
+            background-color: #b3f4ff;
+        }
+
+        .animation-button-off::after,
+        .animation-button-minimize::after,
+        .animation-button-aux::after {
+            position: absolute;
+            bottom: 5px;
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            color: white;
+            font-size: 12px;
+            font-family: sans-serif;
+            pointer-events: none;
+            transition: all 0.2s ease-in-out;
+            white-space: nowrap;
+        }
+
+        .animation-button-off::after {
+            content: "OFF";
+        }
+
+        .animation-button-minimize::after {
+            content: "MINIMIZE";
+        }
+
+        .animation-button-aux::after {
+            content: "AUX";
+        }
+
+        .animation-button-off:hover::after,
+        .animation-button-minimize:hover::after,
+        .animation-button-aux:hover::after {
+            opacity: 1;
+            bottom: 20px;
+        }
+
+        .animation-button-aux:active {
+            height: 3px;
+            top: -20px;
+            background-color: rgb(0, 187, 255);
+            transition: all 0.05s ease-in-out;
+        }
+
+        .animation-button-aux:active::after {
+            opacity: 0;
+            transition: opacity 0.05s ease-in-out;
+        }
+        
+        .animation-button-off:active {
+            height: 3px;
+            top: -20px;
+            background-color: #ff0000;
+            transition: all 0.05s ease-in-out;
+        }
+
+        .animation-button-off:active::after {
+            opacity: 0;
+            transition: opacity 0.05s ease-in-out;
+        }
+        
+        .animation-button-minimize:active {
+            height: 3px;
+            top: -20px;
+            background-color: #eaff00;
+            transition: all 0.05s ease-in-out;
+        }
+
+        .animation-button-minimize:active::after {
+            opacity: 0;
+            transition: opacity 0.05s ease-in-out;
+        }
+
+        /* body {
+            background-color: #000;
+        } */
+
+        .button-system,
+        .aux-port {
+            position: absolute;
+            width: 415px;
+            height: 100%;
+            left: 550%;
+            transform: translateX(-55%);
+            top: 0;
+            pointer-events: none;
+            z-index: 90;
+        }
+
+        .animation-button-off,
+        .animation-button-minimize,
+        .animation-button-aux {
+            pointer-events: auto;
+        }
+
+        .animation-button-off {
+            background-color: rgb(255, 255, 255);
+            width: 31px;
+            height: 5px;
+            position: absolute;
+            top: -22px;
+            left: 290px;
+            transition: all 0.1s ease-in-out;
+        }
+
+        .animation-button-minimize {
+            background-color: rgb(255, 255, 255);
+            width: 30px;
+            height: 5px;
+            position: absolute;
+            top: -22px;
+            left: 320px;
+            transition: all 0.1s ease-in-out;
+        }
+
+        .animation-button-aux {
+            background-color: rgb(255, 255, 255);
+            width: 40px;
+            height: 5px;
+            position: absolute;
+            top: -22px;
+            left: 110px;
+            transition: all 0.1s ease-in-out;
+        }
+
     </style>
 </head>
 <body>
@@ -363,6 +535,15 @@
             <div class="window-controls">
                 <button class="win-btn close" id="btn-close" title="Close"></button>
                 <button class="win-btn minimize" id="btn-minimize" title="Minimize"></button>
+
+                <div class="button-system" id="btn-system">
+                    <div class="animation-button-off"></div>
+                    <div class="animation-button-minimize"></div>
+                </div>
+
+                <div class="aux-port" id="aux-port" title="Aux Port">
+                    <div class="animation-button-aux"></div>
+                </div>
             </div>
             <div class="ipod-shadow svelte-4kg78n">
                 <div class="ipod-shadow-inner svelte-4kg78n">
@@ -537,16 +718,28 @@ function cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
 
 function rows(items) { return { count: items.length, item: i => items[i] }; }
 
-document.getElementById('btn-close').addEventListener('click', () => {
+document.querySelector('.animation-button-off').addEventListener('click', () => {
     if (window.ipc && window.ipc.postMessage) {
         window.ipc.postMessage(JSON.stringify({ cmd: 'quit' }));
     }
 });
 
-document.getElementById('btn-minimize').addEventListener('click', () => {
+document.querySelector('.animation-button-minimize').addEventListener('click', () => {
     if (window.ipc && window.ipc.postMessage) {
         window.ipc.postMessage(JSON.stringify({ cmd: 'minimize' }));
     }
+});
+
+document.querySelector('.animation-button-aux').addEventListener('click', () => {
+    if (cur() && cur().id === 'aux_menu') {
+        return;
+    }
+
+    if (view === 'now_playing') {
+        view = 'menu';
+    }
+    
+    push('aux_menu');
 });
 
 document.querySelector('.ipod-container').addEventListener('mousedown', (e) => {
@@ -604,6 +797,11 @@ window.addEventListener('mouseup', () => {
 function menu(id) {
     const s = S.settings;
     switch (id) {
+    case 'aux_menu':
+        return { title: 'AUX Port', ...rows([
+            { label: 'This feature is', info: true },
+            { label: 'still in development.', info: true }
+        ]) };
     case 'login':
         return { title: 'SpotiPod', ...rows([
             { label: 'Log In', act: () => send({ cmd: 'login' }) },
