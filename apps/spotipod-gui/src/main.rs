@@ -24,26 +24,30 @@ fn main() -> wry::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let event_loop = EventLoopBuilder::<String>::with_user_event().build();
-    let window = WindowBuilder::new()
-        .with_title("SpotiPod")
-        .with_inner_size(LogicalSize::new(460.0, 750.0))
-        .with_resizable(false)
-        .build(&event_loop)
-        .expect("window");
+    let window = std::sync::Arc::new(
+        WindowBuilder::new()
+            .with_title("SpotiPod")
+            .with_inner_size(LogicalSize::new(460.0, 750.0))
+            .with_resizable(false)
+            .with_decorations(false)
+            .with_transparent(true)
+            .build(&event_loop)
+            .expect("window")
+    );
 
     let proxy = event_loop.create_proxy();
     let (tx, done) = backend::spawn(Box::new(move |msg| _ = proxy.send_event(msg)));
 
     let ipc_tx = tx.clone();
+
+    let window_for_ipc = window.clone();
+
     let builder = WebViewBuilder::new()
         .with_html(PAGE)
-        .with_background_color((26, 26, 26, 255))
+        .with_background_color((0, 0, 0, 0))
 
         .with_custom_protocol("asset".into(), move |_, request| {
-            // Вытаскиваем путь, например "assets/logotype.svg"
             let path = request.uri().path().trim_start_matches('/');
-
-            // Читаем файл с диска (относительно папки запуска)
             let (body, mime) = match fs::read(path) {
                 Ok(bytes) => {
                     let ext = path.split('.').last().unwrap_or("");
@@ -67,10 +71,17 @@ fn main() -> wry::Result<()> {
                 .body(body.into())
                 .unwrap()
         })
-        .with_ipc_handler(move |req| match serde_json::from_str::<Cmd>(req.body()) {
-            Ok(cmd) => _ = ipc_tx.send(cmd),
-            Err(e) => log::warn!("bad ui command {}: {e}", req.body()),
+        .with_ipc_handler(move |req| {
+            if req.body().contains("drag_window") {
+                _ = window_for_ipc.drag_window();
+                return;
+            }
+            match serde_json::from_str::<Cmd>(req.body()) {
+                Ok(cmd) => _ = ipc_tx.send(cmd),
+                Err(e) => log::warn!("bad ui command {}: {e}", req.body()),
+            }
         });
+
     #[cfg(not(target_os = "linux"))]
     let webview = builder.build(&window)?;
     #[cfg(target_os = "linux")]
@@ -84,6 +95,14 @@ fn main() -> wry::Result<()> {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::UserEvent(msg) => {
+                let js = format!("window.ipod && ipod.receive({msg})");
+                if let Err(e) = webview.evaluate_script(&js) {
+                    log::warn!("ui update failed: {e}");
+                }
+
+                if msg.contains("drag_window") {
+                    _ = window.drag_window();
+                }
                 let js = format!("window.ipod && ipod.receive({msg})");
                 if let Err(e) = webview.evaluate_script(&js) {
                     log::warn!("ui update failed: {e}");

@@ -7,14 +7,63 @@
     <style>
 
         /* 1. Global Reset & Centering */
+        button, .click-wheel, .menu-item, input, interactive {
+            -webkit-app-region: no-drag;
+        }
+
+        .window-controls {
+            position: absolute;
+            top: 6px;
+            left: 25px;
+            display: flex;
+            gap: 6px;
+            z-index: 9999;
+            -webkit-app-region: no-drag;
+        }
+
+        .win-btn {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+            padding: 0;
+        }
+
+        .win-btn.close {
+            background-color: #ff5f56;
+            border: 0.5px solid #e0443e;
+        }
+
+        .win-btn.minimize {
+            background-color: #ffbd2e;
+            border: 0.5px solid #dea123;
+        }
+
+        .win-btn:hover {
+            opacity: 0.8;
+        }
+
         body {
             display: flex;
             justify-content: center;
             align-items: center;
             min-height: 100vh;
-            background-color: #1a1a1a;
             margin: 0;
             font-family: system-ui, -apple-system, sans-serif;
+        }
+
+        body, .ipod-container {
+            -webkit-app-region: drag;
+            user-select: none;
+        }
+
+        .ipod-container {
+            -webkit-app-region: drag;
+        }
+
+        button, .click-wheel, .menu-item, input, .ipod-screen, .window-controls {
+            -webkit-app-region: no-drag;
         }
 
         /* 2. Combined Shadow DOM Styles */
@@ -222,11 +271,24 @@
 
         .slide-right { animation: slideInRight 0.2s ease-out forwards; }
         .slide-left { animation: slideInLeft 0.2s ease-out forwards; }
+
+        .ipod-container, button, .click-wheel, .menu-item, input, .window-controls {
+            pointer-events: auto;
+            -webkit-app-region: no-drag;
+        }
+
+        .ipod-container {
+            -webkit-app-region: drag; 
+        }
     </style>
 </head>
 <body>
     <div class="ipod-host">
         <div class="ipod svelte-4kg78n">
+            <div class="window-controls">
+                <button class="win-btn close" id="btn-close" title="Close"></button>
+                <button class="win-btn minimize" id="btn-minimize" title="Minimize"></button>
+            </div>
             <div class="ipod-shadow svelte-4kg78n">
                 <div class="ipod-shadow-inner svelte-4kg78n">
                     <div class="ipod-container svelte-4kg78n">
@@ -390,6 +452,24 @@ const send = msg => window.ipc && window.ipc.postMessage(JSON.stringify(msg));
 function cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
 
 function rows(items) { return { count: items.length, item: i => items[i] }; }
+
+document.getElementById('btn-close').addEventListener('click', () => {
+    if (window.ipc && window.ipc.postMessage) {
+        window.ipc.postMessage(JSON.stringify({ cmd: 'quit' }));
+    }
+});
+
+document.getElementById('btn-minimize').addEventListener('click', () => {});
+
+document.querySelector('.ipod-container').addEventListener('mousedown', (e) => {
+    if (e.target.closest('button') || e.target.closest('.click-wheel') || e.target.closest('.ipod-screen') || e.target.closest('.window-controls')) {
+        return;
+    }
+    
+    if (window.ipc && window.ipc.postMessage) {
+        window.ipc.postMessage(JSON.stringify({ cmd: 'drag_window' }));
+    }
+});
 
 function menu(id) {
     const s = S.settings;
