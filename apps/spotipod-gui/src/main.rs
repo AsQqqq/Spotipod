@@ -27,8 +27,10 @@ fn main() -> wry::Result<()> {
     let window = std::sync::Arc::new(
         WindowBuilder::new()
             .with_title("SpotiPod")
-            .with_inner_size(LogicalSize::new(460.0, 750.0))
-            .with_resizable(false)
+            .with_inner_size(LogicalSize::new(415.0, 692.0))
+            .with_min_inner_size(LogicalSize::new(320.0, 500.0))
+            .with_max_inner_size(LogicalSize::new(600.0, 900.0))
+            .with_resizable(true)
             .with_decorations(false)
             .with_transparent(true)
             .build(&event_loop)
@@ -36,6 +38,9 @@ fn main() -> wry::Result<()> {
     );
 
     let proxy = event_loop.create_proxy();
+
+    let quit_proxy = event_loop.create_proxy();
+
     let (tx, done) = backend::spawn(Box::new(move |msg| _ = proxy.send_event(msg)));
 
     let ipc_tx = tx.clone();
@@ -72,10 +77,37 @@ fn main() -> wry::Result<()> {
                 .unwrap()
         })
         .with_ipc_handler(move |req| {
+            let body = req.body();
+
             if req.body().contains("drag_window") {
                 _ = window_for_ipc.drag_window();
                 return;
             }
+            if body.contains("minimize") {
+                _ = window_for_ipc.set_minimized(true);
+                return;
+            }
+            if body.contains("quit") {
+                _ = quit_proxy.send_event("__quit__".to_string());
+                return;
+            }
+
+            // if body.contains("resize_to") {
+            //     #[derive(serde::Deserialize, Debug)]
+            //     struct ResizeTarget { width: f64, height: f64 }
+                
+            //     if let Ok(data) = serde_json::from_str::<ResizeTarget>(body) {
+            //         let scale = window_for_ipc.scale_factor();
+                    
+            //         let target_w = (data.width * scale).clamp(320.0 * scale, 800.0 * scale) as u32;
+            //         let target_h = (data.height * scale).clamp(500.0 * scale, 1000.0 * scale) as u32;
+                    
+            //         _ = window_for_ipc.set_inner_size(tao::dpi::PhysicalSize::new(target_w, target_h));
+            //         window_for_ipc.request_redraw();
+            //     }
+            //     return;
+            // }
+
             match serde_json::from_str::<Cmd>(req.body()) {
                 Ok(cmd) => _ = ipc_tx.send(cmd),
                 Err(e) => log::warn!("bad ui command {}: {e}", req.body()),
@@ -103,6 +135,15 @@ fn main() -> wry::Result<()> {
                 if msg.contains("drag_window") {
                     _ = window.drag_window();
                 }
+
+                if msg == "__quit__" {
+                    window.set_visible(false);
+                    _ = tx.send(Cmd::Quit);
+                    _ = done.recv_timeout(QUIT_TIMEOUT);
+                    *control_flow = ControlFlow::Exit;
+                    return;
+                }
+                
                 let js = format!("window.ipod && ipod.receive({msg})");
                 if let Err(e) = webview.evaluate_script(&js) {
                     log::warn!("ui update failed: {e}");
