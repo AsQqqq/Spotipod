@@ -29,6 +29,23 @@ It combines the timeless design of Apple's iconic music player with the convenie
 
 This isn't just another music player skin. It's an attempt to recreate the feeling of holding and using an actual iPod.
 
+---
+
+## Roadmap
+
+SpotiPod is constantly evolving. Here are some of the features and improvements planned for future releases.
+
+- [ ] **Local Music Support** — Play local audio files directly through SpotiPod, without requiring Spotify.
+- [ ] **Resizable Interface** — Customize the size of the SpotiPod player to fit your preferences.
+- [ ] **Multiple Audio Sources** — Switch between different audio sources. Initial groundwork is already in place.
+- [ ] **Sound Improvements** — Fix existing sound-related bugs and introduce more sound effects to make the experience even closer to the original iPod.
+- [ ] **Additional Music Platforms** — Expand beyond Spotify and local music files by adding support for other music websites and platforms.
+
+This roadmap represents the current direction of development and may change over time.
+
+---
+
+
 ## Features
 
 - **Classic iPod Interface** — A faithful recreation of the iconic iPod interface and its visual identity.
@@ -107,6 +124,14 @@ The iPod may be gone, but its design legacy remains.
 ## License
 
 SpotiPod is distributed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+---
+
+## Building from Source
+
+Want to build SpotiPod yourself?
+
+Check out **[BUILD.md](BUILD.md)** for instructions on setting up the development environment, installing dependencies, running the application, and creating production builds.
 
 ---
 
