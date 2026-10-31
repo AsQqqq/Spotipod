@@ -41,9 +41,9 @@ This isn't just another music player skin. It's an attempt to recreate the feeli
 ## Gallery
 
 <p align="center">
-  <img src="assets/ipod/01.png" width="32%" alt="SpotiPod interface preview 1">
-  <img src="assets/ipod/02.png" width="32%" alt="SpotiPod interface preview 2">
-  <img src="assets/ipod/03.png" width="32%" alt="SpotiPod interface preview 3">
+  <img src="assets/ipod/1.png" width="32%" alt="SpotiPod interface preview 1">
+  <img src="assets/ipod/2.png" width="32%" alt="SpotiPod interface preview 2">
+  <img src="assets/ipod/3.png" width="32%" alt="SpotiPod interface preview 3">
 </p>
 
 ## Behind the Project
