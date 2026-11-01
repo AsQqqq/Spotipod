@@ -37,7 +37,7 @@ SpotiPod is constantly evolving. Here are some of the features and improvements 
 
 - [ ] **Local Music Support** — Play local audio files directly through SpotiPod, without requiring Spotify.
 - [X] **Resizable Interface** — Customize the size of the SpotiPod player to fit your preferences.
-- [ ] **Multiple Audio Sources** — Switch between different audio sources. Initial groundwork is already in place.
+- [X] **Multiple Audio Sources** — Switch between different audio sources. Initial groundwork is already in place.
 - [X] **Sound Improvements** — Fix existing sound-related bugs and introduce more sound effects to make the experience even closer to the original iPod.
 - [ ] **Additional Music Platforms** — Expand beyond Spotify and local music files by adding support for other music websites and platforms.
 
