@@ -373,9 +373,21 @@ fn save_library(library: &Library) {
 }
 
 fn refresh_outputs(ctx: &Ctx, sp: &Spotipod) {
-    if let Some(list) = ctx.report(sp.output_devices()) {
-        ctx.update(|d| d.outputs = list);
+    if let Some(mut list) = ctx.report(sp.output_devices()) {
+        ctx.update(|d| {
+            preserve_output_order(&mut list, &d.outputs);
+            d.outputs = list;
+        });
     }
+}
+
+fn preserve_output_order(outputs: &mut [OutputDevice], previous: &[OutputDevice]) {
+    outputs.sort_by_key(|device| {
+        previous
+            .iter()
+            .position(|old| old.id == device.id)
+            .unwrap_or(usize::MAX)
+    });
 }
 
 async fn handle(ctx: &Arc<Ctx>, sp: &mut Spotipod, cmd: Cmd) {
@@ -444,6 +456,56 @@ async fn handle(ctx: &Arc<Ctx>, sp: &mut Spotipod, cmd: Cmd) {
             refresh_outputs(ctx, sp);
         }
         Cmd::Quit => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preserve_output_order;
+    use spotipod_core::OutputDevice;
+
+    #[test]
+    fn output_refresh_keeps_existing_order_and_appends_new_devices() {
+        let previous = vec![
+            OutputDevice {
+                id: "a".into(),
+                name: "A".into(),
+                is_default: true,
+            },
+            OutputDevice {
+                id: "b".into(),
+                name: "B".into(),
+                is_default: false,
+            },
+        ];
+        let mut refreshed = vec![
+            OutputDevice {
+                id: "b".into(),
+                name: "B".into(),
+                is_default: true,
+            },
+            OutputDevice {
+                id: "c".into(),
+                name: "C".into(),
+                is_default: false,
+            },
+            OutputDevice {
+                id: "a".into(),
+                name: "A".into(),
+                is_default: false,
+            },
+        ];
+
+        preserve_output_order(&mut refreshed, &previous);
+
+        assert_eq!(
+            refreshed
+                .iter()
+                .map(|device| device.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b", "c"],
+        );
+        assert!(refreshed[1].is_default);
     }
 }
 

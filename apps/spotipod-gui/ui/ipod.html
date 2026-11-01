@@ -689,7 +689,7 @@ const S = {
     phase: 'starting',
     progress: '',
     status: '',
-    settings: { shuffle: 'off', repeat: 'off', backlight: 'off', clicker: true },
+    settings: { shuffle: 'off', repeat: 'off', backlight: 'off', clicker: true, clicker_volume: 100 },
     about: null,
     outputs: [],
     playback: { status: 'stopped', track: null, position_ms: 0, volume: 0, device: null },
@@ -715,6 +715,7 @@ const send = msg => window.ipc && window.ipc.postMessage(JSON.stringify(msg));
 
 // --- Menus ---
 function cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
+function clickerVolume() { return Math.max(0, Math.min(100, S.settings.clicker_volume ?? 100)); }
 
 function rows(items) { return { count: items.length, item: i => items[i] }; }
 
@@ -731,7 +732,7 @@ document.querySelector('.animation-button-minimize').addEventListener('click', (
 });
 
 document.querySelector('.animation-button-aux').addEventListener('click', () => {
-    if (cur() && cur().id === 'aux_menu') {
+    if (cur() && cur().id === 'output') {
         return;
     }
 
@@ -739,7 +740,7 @@ document.querySelector('.animation-button-aux').addEventListener('click', () => 
         view = 'menu';
     }
     
-    push('aux_menu');
+    push('output');
 });
 
 document.querySelector('.ipod-container').addEventListener('mousedown', (e) => {
@@ -797,11 +798,6 @@ window.addEventListener('mouseup', () => {
 function menu(id) {
     const s = S.settings;
     switch (id) {
-    case 'aux_menu':
-        return { title: 'AUX Port', ...rows([
-            { label: 'This feature is', info: true },
-            { label: 'still in development.', info: true }
-        ]) };
     case 'login':
         return { title: 'SpotiPod', ...rows([
             { label: 'Log In', act: () => send({ cmd: 'login' }) },
@@ -812,7 +808,6 @@ function menu(id) {
             { label: 'Playlists', next: 'playlists' },
             { label: 'Albums', next: 'albums' },
             { label: 'Songs', next: S.liked ? 'list:' + S.liked : null, open: S.liked ? [S.liked, 'Songs'] : null },
-            { label: 'Extras', next: 'extras' },
             { label: 'Settings', next: 'settings' },
         ];
         if (S.playback.track) items.push({ label: 'Now Playing', act: showNowPlaying });
@@ -829,6 +824,7 @@ function menu(id) {
             { label: 'Repeat', value: cap(s.repeat), act: () => setSettings({ repeat: { off: 'one', one: 'all', all: 'off' }[s.repeat] }) },
             { label: 'Backlight Timer', next: 'backlight' },
             { label: 'Clicker', value: s.clicker ? 'On' : 'Off', act: () => setSettings({ clicker: !s.clicker }) },
+            { label: 'Clicker Volume', value: `${clickerVolume()}%`, next: 'clicker_volume' },
             { label: 'Reset All Settings', next: 'reset' },
             { label: 'Log Out', next: 'logout' },
         ]) };
@@ -852,15 +848,15 @@ function menu(id) {
         return { title: 'Backlight Timer', ...rows(BACKLIGHT_LABELS.map(([v, label]) => ({
             label, act: () => { setSettings({ backlight: v }); back(); },
         }))) };
+    case 'clicker_volume':
+        return { title: 'Clicker Volume', ...rows([
+            { label: 'Volume', value: `${clickerVolume()}%`, info: true },
+            { label: 'Rotate wheel to adjust', info: true },
+        ]) };
     case 'reset':
         return { title: 'Reset All', ...rows([
             { label: 'Cancel', act: back },
             { label: 'Reset', act: () => { send({ cmd: 'reset_settings' }); back(); } },
-        ]) };
-    case 'extras':
-        return { title: 'Extras', ...rows([
-            { label: 'Output', next: 'output' },
-            { label: 'Log Out', next: 'logout' },
         ]) };
     case 'output':
         return { title: 'Output', ...rows(S.outputs.length
@@ -957,6 +953,14 @@ function rotate(steps) {
     if (!steps) return;
     if (view === 'now_playing') {
         if (npMode === 'scrubbing') scrub(steps); else changeVolume(steps);
+        return;
+    }
+    if (cur().id === 'clicker_volume') {
+        const volume = Math.max(0, Math.min(100, clickerVolume() + steps * 5));
+        if (volume !== clickerVolume()) {
+            setSettings({ clicker_volume: volume });
+            click();
+        }
         return;
     }
     const t = cur();
@@ -1305,18 +1309,65 @@ clickAudioTemplate.load();
 let lastClickTime = 0;
 const CLICK_COOLDOWN = 50;
 
+// Web Audio based click sound (more reliable under WebKit autoplay policy).
+let clickAudioCtx = null;
+let clickAudioBuffer = null;
+let clickAudioReady = false;
+try {
+    clickAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+} catch (_) { clickAudioCtx = null; }
+
+async function loadClickSound() {
+    if (!clickAudioCtx) return;
+    try {
+        const res = await fetch('asset://localhost/ipod_/ui_.mp3');
+        const arr = await res.arrayBuffer();
+        clickAudioBuffer = await new Promise((resolve, reject) => {
+            clickAudioCtx.decodeAudioData(arr, resolve, reject);
+        });
+        clickAudioReady = true;
+    } catch (e) {
+        console.warn('click sound load failed', e);
+    }
+}
+function unlockClickAudio() {
+    if (clickAudioCtx && clickAudioCtx.state === 'suspended') {
+        clickAudioCtx.resume().catch(() => {});
+    }
+}
+window.addEventListener('pointerdown', unlockClickAudio, { passive: true });
+window.addEventListener('keydown', unlockClickAudio, { passive: true });
+loadClickSound();
+
 function click() {
     if (!S.settings.clicker) return;
-    
+
     const now = performance.now();
     if (now - lastClickTime < CLICK_COOLDOWN) {
         return;
     }
     lastClickTime = now;
 
+    // Prefer Web Audio (works after user gesture unlock).
+    if (clickAudioCtx && clickAudioReady && clickAudioBuffer) {
+        try {
+            if (clickAudioCtx.state === 'suspended') clickAudioCtx.resume();
+            const src = clickAudioCtx.createBufferSource();
+            src.buffer = clickAudioBuffer;
+            const gain = clickAudioCtx.createGain();
+            gain.gain.value = clickerVolume() / 100;
+            src.connect(gain);
+            gain.connect(clickAudioCtx.destination);
+            src.start(0);
+            return;
+        } catch (_) { /* fall through */ }
+    }
+
+    // Fallback to HTMLAudio.
     try {
         const sound = clickAudioTemplate.cloneNode();
         sound.currentTime = 0;
+        sound.volume = clickerVolume() / 100;
         sound.play().catch(() => {});
     } catch (_) { /* no audio */ }
 }

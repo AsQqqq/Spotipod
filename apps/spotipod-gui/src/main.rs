@@ -21,6 +21,10 @@ const PAGE: &str = include_str!("../ui/ipod.html");
 /// Waits this long for a clean stop (cache save, Connect unregister) on close.
 const QUIT_TIMEOUT: Duration = Duration::from_secs(3);
 
+const LOGOTYPE_SVG: &[u8] = include_bytes!("../../../assets/logotype.svg");
+const SPOTIPOD_SVG: &[u8] = include_bytes!("../../../assets/spotipod.svg");
+const UI_CLICK_MP3: &[u8] = include_bytes!("../../../ipod_/ui_.mp3");
+
 fn main() -> wry::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -63,22 +67,27 @@ fn main() -> wry::Result<()> {
 
         .with_custom_protocol("asset".into(), move |_, request| {
             let path = request.uri().path().trim_start_matches('/');
-            let (body, mime) = match fs::read(path) {
-                Ok(bytes) => {
-                    let ext = path.split('.').last().unwrap_or("");
-                    let mime = match ext {
-                        "svg" => "image/svg+xml",
-                        "png" => "image/png",
-                        "jpg" | "jpeg" => "image/jpeg",
-                        "mp3" => "audio/mpeg",
-                        _ => "application/octet-stream",
-                    };
-                    (bytes, mime)
-                }
-                Err(e) => {
-                    log::warn!("Asset not found {}: {}", path, e);
-                    (Vec::new(), "text/plain")
-                }
+            let (body, mime) = match path {
+                "assets/logotype.svg" => (LOGOTYPE_SVG.to_vec(), "image/svg+xml"),
+                "assets/spotipod.svg" => (SPOTIPOD_SVG.to_vec(), "image/svg+xml"),
+                "ipod_/ui_.mp3" => (UI_CLICK_MP3.to_vec(), "audio/mpeg"),
+                _ => match fs::read(path) {
+                    Ok(bytes) => {
+                        let ext = path.split('.').last().unwrap_or("");
+                        let mime = match ext {
+                            "svg" => "image/svg+xml",
+                            "png" => "image/png",
+                            "jpg" | "jpeg" => "image/jpeg",
+                            "mp3" => "audio/mpeg",
+                            _ => "application/octet-stream",
+                        };
+                        (bytes, mime)
+                    }
+                    Err(e) => {
+                        log::warn!("Asset not found {}: {}", path, e);
+                        (Vec::new(), "text/plain")
+                    }
+                },
             };
 
             Response::builder()

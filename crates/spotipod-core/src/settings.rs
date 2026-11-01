@@ -73,6 +73,8 @@ pub struct Settings {
     pub backlight: Backlight,
     /// Click Wheel click sound.
     pub clicker: bool,
+    /// Click Wheel click sound volume (0-100%).
+    pub clicker_volume: u8,
 }
 
 impl Default for Settings {
@@ -82,7 +84,21 @@ impl Default for Settings {
             repeat: Repeat::Off,
             backlight: Backlight::Off,
             clicker: true,
+            clicker_volume: 100,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    #[test]
+    fn older_settings_default_clicker_volume() {
+        let settings: Settings = serde_json::from_str(r#"{"clicker":false}"#).unwrap();
+
+        assert!(!settings.clicker);
+        assert_eq!(settings.clicker_volume, 100);
     }
 }
 
