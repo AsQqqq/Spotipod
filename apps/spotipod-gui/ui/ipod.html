@@ -131,7 +131,7 @@
         /* svelte-1cxxedm */
         .menu.svelte-1cxxedm { position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; z-index: 2; }
         .screen-body.svelte-1cxxedm { position: relative; flex: none; height: 181.7px; overflow: clip; }
-        .screen.svelte-1cxxedm { position: absolute; top: 0; left: 0; width: 100%; }
+        .screen.svelte-1cxxedm { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
 
         /* svelte-1bjtjdb */
         .menu-title.svelte-1bjtjdb { position: relative; flex: none; box-sizing: border-box; height: 37px; margin: 0 5px; border-bottom: 2px solid #484647; text-align: center; }
@@ -150,6 +150,11 @@
 
         /* svelte-v01lnd */
         .menu-items.svelte-v01lnd.svelte-v01lnd { height: 180px; margin: 1.7px 0 0; padding: 0 5px; overflow: hidden; position: relative; opacity: var(--ipod-screen-opacity, 1); }
+        #brick-canvas { position: absolute; inset: 0; z-index: 4; display: none; width: 100%; height: 100%; image-rendering: pixelated; }
+        #calendar-canvas { position: absolute; inset: 0; z-index: 4; display: none; width: 100%; height: 100%; }
+        #alarm-ring-screen { position: absolute; inset: 0; z-index: 5; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: linear-gradient(135deg, #a5a59b, #d6d5d0); text-align: center; }
+        .ipod-screen.backlit #alarm-ring-screen { background: #0f69ff; color: #b5c3d8; }
+        #alarm-ring-time { font-size: 32px; font-feature-settings: "tnum"; font-variant-numeric: tabular-nums; }
         .menu-items.svelte-v01lnd.svelte-v01lnd::-webkit-scrollbar { display: none; }
         .menu-item.svelte-v01lnd.svelte-v01lnd { display: flex; justify-content: space-between; align-items: center; padding: 3px 12px 1px; overflow: hidden; white-space: nowrap; gap: 8px; }
         .menu-item.centered.svelte-v01lnd.svelte-v01lnd { justify-content: center; }
@@ -595,6 +600,13 @@
                                     <div class="screen-body svelte-1cxxedm">
                                         <div class="screen svelte-1cxxedm">
                                             <ul class="menu-items svelte-v01lnd" id="menu-list"></ul>
+                                            <canvas id="brick-canvas" width="257" height="181" aria-label="Brick game"></canvas>
+                                            <canvas id="calendar-canvas" width="257" height="181" aria-label="Calendar"></canvas>
+                                            <div id="alarm-ring-screen" role="status" aria-live="assertive">
+                                                <div>ALARM</div>
+                                                <div id="alarm-ring-time"></div>
+                                                <div>SELECT TO STOP</div>
+                                            </div>
 
                                             <div class="now-playing svelte-w35jhk" id="now-playing" style="display: none;">
                                                 <div class="now-playing-index svelte-w35jhk" id="np-index-row">
@@ -719,7 +731,7 @@ let receivedAt = performance.now();
 
 // --- UI state ---
 let stack = [];            // [{ id, sel, top }]
-let view = 'menu';         // 'menu' | 'now_playing'
+let view = 'menu';         // 'menu' | 'now_playing' | 'brick' | 'calendar' | 'alarm_ring'
 let npMode = 'progress';   // 'progress' | 'volume' | 'scrubbing'
 let npModeTimer = null;
 let playedFrom = null;     // context of the last track started here
@@ -729,12 +741,400 @@ let toastTimer = null, toast = '';
 
 const $ = id => document.getElementById(id);
 const send = msg => window.ipc && window.ipc.postMessage(JSON.stringify(msg));
+const brickCanvas = $('brick-canvas');
+const brickCtx = brickCanvas.getContext('2d');
+const calendarCanvas = $('calendar-canvas');
+const calendarCtx = calendarCanvas.getContext('2d');
+const BRICK_PADDLE_STEP = 12;
+const ALARM_STORAGE_KEY = 'spotipod-alarm';
+const DEFAULT_ALARM = { enabled: false, hour: 7, minute: 0, daily: true };
+const calendarDate = new Date();
+let alarmSettings = loadAlarmSettings();
+let alarmReturnView = 'menu';
+let alarmPausedBrick = false;
+let alarmTone = null;
+let alarmToneGain = null;
+let alarmToneStarted = false;
+let alarmToneTimer = null;
+let lastAlarmDate = '';
+const brickGame = {
+    state: 'ready',
+    paddleX: brickCanvas.width / 2,
+    ballX: brickCanvas.width / 2,
+    ballY: brickCanvas.height - 25,
+    ballVX: 2.2,
+    ballVY: -2.6,
+    lives: 3,
+    score: 0,
+    bricks: [],
+    frame: 0,
+    lastFrame: 0,
+};
+
+function loadAlarmSettings() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(ALARM_STORAGE_KEY));
+        if (!saved || typeof saved !== 'object') return { ...DEFAULT_ALARM };
+        return {
+            enabled: saved.enabled === true,
+            hour: Number.isInteger(saved.hour) && saved.hour >= 0 && saved.hour < 24 ? saved.hour : DEFAULT_ALARM.hour,
+            minute: Number.isInteger(saved.minute) && saved.minute >= 0 && saved.minute < 60 ? saved.minute : DEFAULT_ALARM.minute,
+            daily: saved.daily !== false,
+        };
+    } catch (error) {
+        console.warn('Could not load alarm settings', error);
+        return { ...DEFAULT_ALARM };
+    }
+}
+
+function saveAlarmSettings() {
+    try {
+        localStorage.setItem(ALARM_STORAGE_KEY, JSON.stringify(alarmSettings));
+    } catch (error) {
+        console.warn('Could not save alarm settings', error);
+    }
+}
+
+function updateAlarmSettings(patch) {
+    alarmSettings = { ...alarmSettings, ...patch };
+    saveAlarmSettings();
+    render();
+}
+
+function alarmTimeText() {
+    return `${String(alarmSettings.hour).padStart(2, '0')}:${String(alarmSettings.minute).padStart(2, '0')}`;
+}
+
+function adjustAlarmTime(steps) {
+    const field = cur().sel === 0 ? 'hour' : 'minute';
+    const limit = field === 'hour' ? 24 : 60;
+    const value = (alarmSettings[field] + steps % limit + limit) % limit;
+    updateAlarmSettings({ [field]: value });
+}
+
+function drawCalendar() {
+    const context = calendarCtx;
+    const ink = $('screen').classList.contains('backlit') ? '#b5c3d8' : '#484647';
+    const year = calendarDate.getFullYear();
+    const month = calendarDate.getMonth();
+    const selectedDay = calendarDate.getDate();
+    const firstWeekday = new Date(year, month, 1).getDay();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const today = new Date();
+    const cellWidth = 34;
+    const left = (calendarCanvas.width - cellWidth * 7) / 2;
+
+    context.clearRect(0, 0, calendarCanvas.width, calendarCanvas.height);
+    context.fillStyle = ink;
+    context.textBaseline = 'middle';
+    context.textAlign = 'center';
+    context.font = 'bold 11px monospace';
+    context.fillText(calendarDate.toLocaleString(undefined, { month: 'long', year: 'numeric' }).toUpperCase(), calendarCanvas.width / 2, 12);
+    context.font = '8px monospace';
+    for (let weekday = 0; weekday < 7; weekday++) {
+        context.fillText(['S', 'M', 'T', 'W', 'T', 'F', 'S'][weekday], left + cellWidth * (weekday + 0.5), 31);
+    }
+
+    for (let day = 1; day <= daysInMonth; day++) {
+        const index = firstWeekday + day - 1;
+        const column = index % 7;
+        const row = Math.floor(index / 7);
+        const x = left + cellWidth * (column + 0.5);
+        const y = 49 + row * 17;
+        const isSelected = day === selectedDay;
+        const isToday = year === today.getFullYear() && month === today.getMonth() && day === today.getDate();
+        if (isSelected) {
+            context.fillStyle = ink;
+            context.fillRect(x - 10, y - 7, 20, 14);
+            context.fillStyle = $('screen').classList.contains('backlit') ? '#484647' : '#d6d5d0';
+        } else {
+            context.fillStyle = ink;
+        }
+        context.fillText(String(day), x, y);
+        if (isToday && !isSelected) context.fillRect(x - 2, y + 6, 4, 1);
+    }
+
+    context.fillStyle = ink;
+    context.font = '8px monospace';
+    context.fillText(calendarDate.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }), calendarCanvas.width / 2, 160);
+    context.fillText('WHEEL TO SCROLL', calendarCanvas.width / 2, 174);
+}
+
+function openCalendar() {
+    calendarDate.setTime(Date.now());
+    click(true);
+    animateScreenTransition('right');
+    view = 'calendar';
+    render();
+}
+
+function pulseAlarmTone() {
+    if (!clickAudioCtx || !alarmToneGain) return;
+    const now = clickAudioCtx.currentTime;
+    alarmToneGain.gain.cancelScheduledValues(now);
+    alarmToneGain.gain.setValueAtTime(0, now);
+    for (let pulse = 0; pulse < 3; pulse++) {
+        const start = now + pulse * 0.6;
+        alarmToneGain.gain.setValueAtTime(0.12, start);
+        alarmToneGain.gain.setValueAtTime(0, start + 0.25);
+    }
+}
+
+function startAlarmTone() {
+    if (!clickAudioCtx) return;
+    try {
+        if (clickAudioCtx.state === 'suspended') clickAudioCtx.resume().catch(error => console.warn('Could not resume alarm audio', error));
+        alarmTone = clickAudioCtx.createOscillator();
+        alarmToneGain = clickAudioCtx.createGain();
+        alarmTone.type = 'square';
+        alarmTone.frequency.value = 740;
+        alarmToneGain.gain.value = 0;
+        alarmTone.connect(alarmToneGain);
+        alarmToneGain.connect(clickAudioCtx.destination);
+        alarmTone.start();
+        alarmToneStarted = true;
+        pulseAlarmTone();
+        alarmToneTimer = setInterval(pulseAlarmTone, 2200);
+    } catch (error) {
+        console.warn('Could not start alarm sound', error);
+        stopAlarmTone();
+    }
+}
+
+function stopAlarmTone() {
+    clearInterval(alarmToneTimer);
+    alarmToneTimer = null;
+    if (alarmTone) {
+        if (alarmToneStarted) alarmTone.stop();
+        alarmTone.disconnect();
+        alarmTone = null;
+        alarmToneStarted = false;
+    }
+    if (alarmToneGain) {
+        alarmToneGain.disconnect();
+        alarmToneGain = null;
+    }
+}
+
+function showAlarmRing() {
+    alarmReturnView = view;
+    alarmPausedBrick = view === 'brick' && brickGame.state === 'playing';
+    if (alarmPausedBrick) {
+        cancelAnimationFrame(brickGame.frame);
+        brickGame.frame = 0;
+        brickGame.state = 'paused';
+    }
+    view = 'alarm_ring';
+    startAlarmTone();
+    render();
+}
+
+function dismissAlarm() {
+    stopAlarmTone();
+    view = alarmReturnView;
+    if (view === 'brick' && alarmPausedBrick) resumeBrickGame();
+    alarmPausedBrick = false;
+    render();
+}
+
+function checkAlarm() {
+    if (!alarmSettings.enabled || view === 'alarm_ring') return;
+    const now = new Date();
+    if (now.getHours() !== alarmSettings.hour || now.getMinutes() !== alarmSettings.minute) return;
+    const dateKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
+    if (lastAlarmDate === dateKey) return;
+    lastAlarmDate = dateKey;
+    if (!alarmSettings.daily) {
+        alarmSettings.enabled = false;
+        saveAlarmSettings();
+    }
+    showAlarmRing();
+}
 
 // --- Menus ---
 function cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
 function clickerVolume() { return Math.max(0, Math.min(100, S.settings.clicker_volume ?? 100)); }
 
 function rows(items) { return { count: items.length, item: i => items[i] }; }
+
+function resetBrickGame() {
+    brickGame.state = 'ready';
+    brickGame.paddleX = brickCanvas.width / 2;
+    brickGame.ballX = brickGame.paddleX;
+    brickGame.ballY = brickCanvas.height - 25;
+    brickGame.ballVX = 2.2;
+    brickGame.ballVY = -2.6;
+    brickGame.lives = 3;
+    brickGame.score = 0;
+    brickGame.bricks = [];
+    for (let row = 0; row < 4; row++) {
+        for (let column = 0; column < 8; column++) {
+            brickGame.bricks.push({
+                x: 7 + column * 31,
+                y: 22 + row * 12,
+                width: 28,
+                height: 9,
+                row,
+                alive: true,
+            });
+        }
+    }
+}
+
+function startBrickGame() {
+    cancelAnimationFrame(brickGame.frame);
+    brickGame.frame = 0;
+    resetBrickGame();
+    click(true);
+    animateScreenTransition('right');
+    view = 'brick';
+    render();
+}
+
+function launchBrickBall() {
+    brickGame.state = 'playing';
+    brickGame.ballVX = Math.random() < 0.5 ? -2.2 : 2.2;
+    brickGame.ballVY = -2.6;
+    brickGame.lastFrame = 0;
+    brickGame.frame = requestAnimationFrame(updateBrickGame);
+}
+
+function resumeBrickGame() {
+    brickGame.state = 'playing';
+    brickGame.lastFrame = 0;
+    brickGame.frame = requestAnimationFrame(updateBrickGame);
+}
+
+function selectBrickGame() {
+    if (brickGame.state === 'ready') {
+        launchBrickBall();
+    } else if (brickGame.state === 'playing') {
+        brickGame.state = 'paused';
+        cancelAnimationFrame(brickGame.frame);
+        brickGame.frame = 0;
+    } else if (brickGame.state === 'paused') {
+        resumeBrickGame();
+    } else {
+        resetBrickGame();
+        launchBrickBall();
+    }
+    drawBrickGame();
+}
+
+function moveBrickPaddle(steps) {
+    brickGame.paddleX = Math.max(22, Math.min(brickCanvas.width - 22, brickGame.paddleX + steps * BRICK_PADDLE_STEP));
+    if (brickGame.state === 'ready') {
+        brickGame.ballX = brickGame.paddleX;
+    }
+    drawBrickGame();
+}
+
+function updateBrickGame(timestamp) {
+    if (view !== 'brick' || brickGame.state !== 'playing') return;
+    const frameScale = brickGame.lastFrame
+        ? Math.min((timestamp - brickGame.lastFrame) / (1000 / 60), 2)
+        : 1;
+    brickGame.lastFrame = timestamp;
+
+    const radius = 3;
+    const paddleY = brickCanvas.height - 15;
+    brickGame.ballX += brickGame.ballVX * frameScale;
+    brickGame.ballY += brickGame.ballVY * frameScale;
+
+    if (brickGame.ballX < 6 + radius || brickGame.ballX > brickCanvas.width - 6 - radius) {
+        brickGame.ballVX *= -1;
+        brickGame.ballX = Math.max(6 + radius, Math.min(brickCanvas.width - 6 - radius, brickGame.ballX));
+    }
+    if (brickGame.ballY < 7 + radius) {
+        brickGame.ballVY = Math.abs(brickGame.ballVY);
+    }
+
+    const hitBrick = brickGame.bricks.find(brick =>
+        brick.alive &&
+        brickGame.ballX + radius >= brick.x &&
+        brickGame.ballX - radius <= brick.x + brick.width &&
+        brickGame.ballY + radius >= brick.y &&
+        brickGame.ballY - radius <= brick.y + brick.height
+    );
+    if (hitBrick) {
+        hitBrick.alive = false;
+        brickGame.score += (4 - hitBrick.row) * 10;
+        brickGame.ballVY *= -1;
+        if (brickGame.bricks.every(brick => !brick.alive)) {
+            brickGame.state = 'won';
+        }
+    }
+
+    if (brickGame.ballVY > 0 &&
+        brickGame.ballY + radius >= paddleY &&
+        brickGame.ballY - radius <= paddleY + 4 &&
+        Math.abs(brickGame.ballX - brickGame.paddleX) <= 23) {
+        const offset = (brickGame.ballX - brickGame.paddleX) / 23;
+        brickGame.ballY = paddleY - radius;
+        brickGame.ballVX = offset * 3.2;
+        brickGame.ballVY = -Math.max(2.2, Math.abs(brickGame.ballVY));
+    }
+
+    if (brickGame.ballY > brickCanvas.height) {
+        brickGame.lives--;
+        if (brickGame.lives === 0) {
+            brickGame.state = 'over';
+        } else {
+            brickGame.state = 'ready';
+            brickGame.ballX = brickGame.paddleX;
+            brickGame.ballY = brickCanvas.height - 25;
+            brickGame.ballVX = 2.2;
+            brickGame.ballVY = -2.6;
+        }
+    }
+
+    drawBrickGame();
+    if (brickGame.state === 'playing') {
+        brickGame.frame = requestAnimationFrame(updateBrickGame);
+    } else {
+        brickGame.frame = 0;
+    }
+}
+
+function drawBrickGame() {
+    const context = brickCtx;
+    const ink = $('screen').classList.contains('backlit') ? '#b5c3d8' : '#484647';
+    const paddleY = brickCanvas.height - 15;
+    context.clearRect(0, 0, brickCanvas.width, brickCanvas.height);
+    context.fillStyle = ink;
+    context.font = '8px monospace';
+    context.textBaseline = 'top';
+    context.fillText(`SCORE ${String(brickGame.score).padStart(4, '0')}`, 8, 5);
+    context.textAlign = 'right';
+    context.fillText(`BALLS ${brickGame.lives}`, brickCanvas.width - 8, 5);
+    context.textAlign = 'left';
+    context.fillRect(7, 16, brickCanvas.width - 14, 1);
+
+    for (const brick of brickGame.bricks) {
+        if (!brick.alive) continue;
+        context.globalAlpha = 1 - brick.row * 0.12;
+        context.fillRect(brick.x, brick.y, brick.width, brick.height);
+        context.clearRect(brick.x + 2, brick.y + 2, brick.width - 4, 1);
+    }
+    context.globalAlpha = 1;
+    context.fillRect(brickGame.paddleX - 20, paddleY, 40, 4);
+    context.fillRect(Math.round(brickGame.ballX) - 2, Math.round(brickGame.ballY) - 2, 4, 4);
+
+    let message = '';
+    if (brickGame.state === 'ready') message = 'SELECT TO LAUNCH';
+    else if (brickGame.state === 'paused') message = 'PAUSED';
+    else if (brickGame.state === 'won') message = 'YOU WIN!';
+    else if (brickGame.state === 'over') message = 'GAME OVER';
+    if (message) {
+        context.fillStyle = $('screen').classList.contains('backlit') ? '#b5c3d8' : '#484647';
+        context.textAlign = 'center';
+        context.font = 'bold 10px monospace';
+        context.fillText(message, brickCanvas.width / 2, 91);
+        context.font = '7px monospace';
+        context.fillText('WHEEL TO MOVE', brickCanvas.width / 2, 105);
+        context.textAlign = 'left';
+    }
+}
 
 document.querySelector('.animation-button-off').addEventListener('click', () => {
     if (window.ipc && window.ipc.postMessage) {
@@ -829,9 +1229,10 @@ function menu(id) {
     case 'home': {
         const items = [
             { label: 'Playlists', next: 'playlists' },
-            { label: 'Albums', next: 'albums' },
+            // { label: 'Albums', next: 'albums' },
             { label: 'Songs', next: S.liked ? 'list:' + S.liked : null, open: S.liked ? [S.liked, 'Songs'] : null },
             { label: 'Settings', next: 'settings' },
+            { label: 'Extras', next: 'extras' },
         ];
         if (S.playback.track) items.push({ label: 'Now Playing', act: showNowPlaying });
         return { title: 'iPod', ...rows(items) };
@@ -850,6 +1251,29 @@ function menu(id) {
             { label: 'Clicker Volume', value: `${clickerVolume()}%`, next: 'clicker_volume' },
             { label: 'Reset All Settings', next: 'reset' },
             { label: 'Log Out', next: 'logout' },
+        ]) };
+    case 'extras':
+        return { title: 'Extras', ...rows([
+            { label: 'Calendar', act: openCalendar },
+            { label: 'Alarm Clock', next: 'alarm' },
+            { label: 'Games', next: 'games' },
+        ]) };
+    case 'alarm':
+        return { title: 'Alarm Clock', ...rows([
+            { label: 'Alarm', value: alarmSettings.enabled ? 'On' : 'Off', act: () => updateAlarmSettings({ enabled: !alarmSettings.enabled }) },
+            { label: 'Time', value: alarmTimeText(), next: 'alarm_time' },
+            { label: 'Repeat', value: alarmSettings.daily ? 'Daily' : 'Once', act: () => updateAlarmSettings({ daily: !alarmSettings.daily }) },
+        ]) };
+    case 'alarm_time':
+        return { title: 'Set Alarm', ...rows([
+            { label: 'Hour', value: String(alarmSettings.hour).padStart(2, '0') },
+            { label: 'Minute', value: String(alarmSettings.minute).padStart(2, '0') },
+            { label: 'Select: field', info: true },
+            { label: 'Wheel: adjust', info: true },
+        ]) };
+    case 'games':
+        return { title: 'Games', ...rows([
+            { label: 'Brick', act: startBrickGame },
         ]) };
     case 'logout':
         return { title: 'Log Out', ...rows([
@@ -915,6 +1339,14 @@ function menu(id) {
 // --- Navigation ---
 function cur() { return stack[stack.length - 1]; }
 
+function animateScreenTransition(direction) {
+    const screenBody = document.querySelector('.screen-body');
+    if (!screenBody) return;
+    screenBody.classList.remove('slide-right', 'slide-left');
+    void screenBody.offsetWidth;
+    screenBody.classList.add(direction === 'left' ? 'slide-left' : 'slide-right');
+}
+
 function push(id) {
     let sel = 0;
     if (id === 'backlight') sel = Math.max(0, BACKLIGHT_LABELS.findIndex(([v]) => v === S.settings.backlight));
@@ -932,6 +1364,22 @@ function push(id) {
 }
 
 function back() {
+    if (view === 'alarm_ring') {
+        dismissAlarm();
+        return;
+    }
+    if (view === 'calendar') {
+        view = 'menu';
+        render();
+        return;
+    }
+    if (view === 'brick') {
+        cancelAnimationFrame(brickGame.frame);
+        brickGame.frame = 0;
+        view = 'menu';
+        render();
+        return;
+    }
     if (view === 'now_playing') { 
         view = 'menu'; 
         const screenBody = document.querySelector('.screen-body');
@@ -959,6 +1407,27 @@ function back() {
 }
 
 function select() {
+    if (view === 'alarm_ring') {
+        dismissAlarm();
+        return;
+    }
+    if (view === 'calendar') {
+        calendarDate.setTime(Date.now());
+        render();
+        return;
+    }
+    if (view === 'brick') {
+        selectBrickGame();
+        return;
+    }
+    if (cur()?.id === 'alarm_time') {
+        if (cur().sel < 2) {
+            cur().sel = cur().sel === 0 ? 1 : 0;
+            click();
+            render();
+        }
+        return;
+    }
     if (view === 'now_playing') {
         setMode(npMode === 'scrubbing' ? 'progress' : 'scrubbing');
         return;
@@ -974,6 +1443,20 @@ function select() {
 
 function rotate(steps) {
     if (!steps) return;
+    if (view === 'alarm_ring') return;
+    if (view === 'calendar') {
+        calendarDate.setDate(calendarDate.getDate() + steps);
+        render();
+        return;
+    }
+    if (view === 'brick') {
+        moveBrickPaddle(steps);
+        return;
+    }
+    if (cur()?.id === 'alarm_time') {
+        if (cur().sel < 2) adjustAlarmTime(steps);
+        return;
+    }
     if (view === 'now_playing') {
         if (npMode === 'scrubbing') scrub(steps); else changeVolume(steps);
         return;
@@ -1041,10 +1524,16 @@ function render() {
         }
         
         $('now-playing').style.display = 'none';
+        brickCanvas.style.display = 'none';
+        calendarCanvas.style.display = 'none';
+        $('alarm-ring-screen').style.display = 'none';
         const list = $('menu-list');
         
         renderTitleBar();
         if (view === 'now_playing') { renderNowPlaying(); return; }
+        if (view === 'brick') { renderBrickView(); return; }
+        if (view === 'calendar') { renderCalendarView(); return; }
+        if (view === 'alarm_ring') { renderAlarmRingView(); return; }
 
         if (!isReady) {
             if (list) list.style.display = 'none';
@@ -1107,6 +1596,34 @@ function render() {
         // list.style.transform = 'none';
         // list.innerHTML = `<li class="menu-item svelte-v01lnd selected"><span class="item-title svelte-v01lnd" style="font-size: 14px; white-space: normal;">${e.message}</span></li>`;
     }
+}
+
+function renderBrickView() {
+    $('menu-list').style.display = 'none';
+    $('now-playing').style.display = 'none';
+    calendarCanvas.style.display = 'none';
+    brickCanvas.style.display = 'block';
+    setTitle('Brick');
+    drawBrickGame();
+}
+
+function renderCalendarView() {
+    $('menu-list').style.display = 'none';
+    $('now-playing').style.display = 'none';
+    brickCanvas.style.display = 'none';
+    calendarCanvas.style.display = 'block';
+    setTitle('Calendar');
+    drawCalendar();
+}
+
+function renderAlarmRingView() {
+    $('menu-list').style.display = 'none';
+    $('now-playing').style.display = 'none';
+    brickCanvas.style.display = 'none';
+    calendarCanvas.style.display = 'none';
+    $('alarm-ring-time').textContent = alarmTimeText();
+    $('alarm-ring-screen').style.display = 'flex';
+    setTitle('Alarm');
 }
 
 function setTitle(text) {
@@ -1296,7 +1813,9 @@ function receive(msg) {
 }
 
 function onPhase() {
+    if (view === 'alarm_ring') stopAlarmTone();
     view = 'menu';
+    alarmPausedBrick = false;
     if (S.phase === 'need_login') {
         stack = [{ id: 'login', sel: 0, top: 0 }];
         for (const k in lists) delete lists[k];
@@ -1366,11 +1885,11 @@ window.addEventListener('pointerdown', unlockClickAudio, { passive: true });
 window.addEventListener('keydown', unlockClickAudio, { passive: true });
 loadClickSound();
 
-function click() {
+function click(force = false) {
     if (!S.settings.clicker) return;
 
     const now = performance.now();
-    if (now - lastClickTime < CLICK_COOLDOWN) {
+    if (!force && now - lastClickTime < CLICK_COOLDOWN) {
         return;
     }
     lastClickTime = now;
@@ -1455,7 +1974,12 @@ window.addEventListener('wheel', input(e => {
 window.addEventListener('keydown', input(e => {
     switch (e.key) {
     case 'ArrowUp': 
-        if (view === 'menu' && cur()) {
+        if (view === 'calendar') {
+            calendarDate.setDate(calendarDate.getDate() - 7);
+            render();
+        } else if (view === 'menu' && cur()?.id === 'alarm_time') {
+            adjustAlarmTime(-1);
+        } else if (view === 'menu' && cur()) {
             const t = cur();
             if (t.sel > 0) {
                 t.sel--;
@@ -1465,7 +1989,12 @@ window.addEventListener('keydown', input(e => {
         }
         break;
     case 'ArrowDown': 
-        if (view === 'menu' && cur()) {
+        if (view === 'calendar') {
+            calendarDate.setDate(calendarDate.getDate() + 7);
+            render();
+        } else if (view === 'menu' && cur()?.id === 'alarm_time') {
+            adjustAlarmTime(1);
+        } else if (view === 'menu' && cur()) {
             const t = cur();
             const m = menu(t.id);
             if (t.sel < m.count - 1) {
@@ -1477,9 +2006,24 @@ window.addEventListener('keydown', input(e => {
         break;
     case 'Enter': ; select(); break;
     case 'Escape': case 'Backspace': back(); break;
-    case ' ': send({ cmd: 'play_pause' }); break;
-    case 'ArrowLeft': send({ cmd: 'prev' }); break;
-    case 'ArrowRight': send({ cmd: 'next' }); break;
+    case ' ':
+        if (view === 'alarm_ring') break;
+        if (view === 'brick') select(); else send({ cmd: 'play_pause' });
+        break;
+    case 'ArrowLeft':
+        if (view === 'alarm_ring') break;
+        if (view === 'calendar') { calendarDate.setDate(calendarDate.getDate() - 1); render(); }
+        else if (view === 'brick') moveBrickPaddle(-1);
+        else if (view === 'menu' && cur()?.id === 'alarm_time') adjustAlarmTime(-1);
+        else send({ cmd: 'prev' });
+        break;
+    case 'ArrowRight':
+        if (view === 'alarm_ring') break;
+        if (view === 'calendar') { calendarDate.setDate(calendarDate.getDate() + 1); render(); }
+        else if (view === 'brick') moveBrickPaddle(1);
+        else if (view === 'menu' && cur()?.id === 'alarm_time') adjustAlarmTime(1);
+        else send({ cmd: 'next' });
+        break;
     }
 }));
 document.addEventListener('contextmenu', e => e.preventDefault());
@@ -1488,6 +2032,7 @@ document.addEventListener('contextmenu', e => e.preventDefault());
 setInterval(() => {
     if (view === 'now_playing' && S.phase === 'ready') renderProgress();
 }, 250);
+setInterval(checkAlarm, 1000);
 
 window.ipod = { receive };
 render();
