@@ -19,6 +19,8 @@ pub struct Config {
     pub launch_spotify: bool,
     /// iPod Settings menu.
     pub settings: Settings,
+    /// Scale of the GUI window and iPod interface (0.5-1.0).
+    pub ui_scale: f64,
 }
 
 impl Default for Config {
@@ -28,6 +30,7 @@ impl Default for Config {
             spotify_device: None,
             launch_spotify: true,
             settings: Settings::default(),
+            ui_scale: 1.0,
         }
     }
 }
@@ -84,5 +87,23 @@ impl Config {
         let raw = toml::to_string_pretty(self).map_err(|e| CoreError::Config(e.to_string()))?;
         fs::write(&paths.config_file, raw)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn older_config_defaults_ui_scale() {
+        let config: Config = toml::from_str(
+            r#"
+device_name = "SpotiPod"
+launch_spotify = true
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.ui_scale, 1.0);
     }
 }

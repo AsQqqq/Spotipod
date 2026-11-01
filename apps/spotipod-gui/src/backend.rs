@@ -51,6 +51,9 @@ pub enum Cmd {
     SetSettings {
         settings: Settings,
     },
+    SetUiScale {
+        scale: f64,
+    },
     ResetSettings,
     RefreshOutputs,
     /// System output device id.
@@ -95,6 +98,7 @@ struct Data {
     playback: PlaybackState,
     outputs: Vec<OutputDevice>,
     settings: Settings,
+    ui_scale: f64,
     about: Option<About>,
     playlists: Vec<Playlist>,
     albums: Vec<Album>,
@@ -205,7 +209,11 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Cmd>, sink: Sink) {
     };
     let mut events = sp.subscribe();
     let settings = sp.settings();
-    ctx.update(|d| d.settings = settings);
+    let ui_scale = sp.ui_scale();
+    ctx.update(|d| {
+        d.settings = settings;
+        d.ui_scale = ui_scale;
+    });
 
     // The loading screen is already up; now auth.
     if sp.has_cached_credentials() {
@@ -414,6 +422,7 @@ async fn handle(ctx: &Arc<Ctx>, sp: &mut Spotipod, cmd: Cmd) {
                     phase: Phase::NeedLogin,
                     outputs: std::mem::take(&mut d.outputs),
                     settings: d.settings,
+                    ui_scale: d.ui_scale,
                     ..Default::default()
                 };
             });
@@ -442,6 +451,11 @@ async fn handle(ctx: &Arc<Ctx>, sp: &mut Spotipod, cmd: Cmd) {
             ctx.report(sp.set_settings(settings));
             let s = sp.settings();
             ctx.update(|d| d.settings = s);
+        }
+        Cmd::SetUiScale { scale } => {
+            if ctx.report(sp.set_ui_scale(scale)).is_some() {
+                ctx.update(|d| d.ui_scale = sp.ui_scale());
+            }
         }
         Cmd::ResetSettings => {
             ctx.report(sp.reset_settings());
@@ -604,6 +618,7 @@ fn state_json(d: &Data) -> Value {
         "progress": d.progress,
         "status": d.status,
         "settings": d.settings,
+        "ui_scale": d.ui_scale,
         "about": d.about.as_ref().map(|a| json!({
             "songs": a.songs,
             "company": a.company,

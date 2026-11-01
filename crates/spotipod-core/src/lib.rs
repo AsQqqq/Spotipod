@@ -250,6 +250,26 @@ impl Spotipod {
         self.config.settings
     }
 
+    pub fn ui_scale(&self) -> f64 {
+        self.config.ui_scale
+    }
+
+    /// Saves the GUI scale for restoring the window on the next launch.
+    pub fn set_ui_scale(&mut self, scale: f64) -> Result<()> {
+        if !scale.is_finite() || !(0.5..=1.0).contains(&scale) {
+            return Err(CoreError::InvalidArgument(
+                "UI scale must be between 0.5 and 1.0".into(),
+            ));
+        }
+        let previous = self.config.ui_scale;
+        self.config.ui_scale = scale;
+        if let Err(error) = self.config.save(&self.paths) {
+            self.config.ui_scale = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Saves settings; shuffle / repeat are pushed to Spotify right away.
     pub fn set_settings(&mut self, settings: Settings) -> Result<()> {
         let old = self.config.settings;

@@ -8,6 +8,7 @@ use wry::http::{Response, header::CONTENT_TYPE};
 use std::fs;
 
 use backend::Cmd;
+use spotipod_core::{Config, Paths};
 use tao::{
     dpi::LogicalSize,
     event::{Event, WindowEvent},
@@ -24,18 +25,48 @@ const QUIT_TIMEOUT: Duration = Duration::from_secs(3);
 const LOGOTYPE_SVG: &[u8] = include_bytes!("../../../assets/logotype.svg");
 const SPOTIPOD_SVG: &[u8] = include_bytes!("../../../assets/spotipod.svg");
 const UI_CLICK_MP3: &[u8] = include_bytes!("../../../ipod_/ui_.mp3");
+const WINDOW_WIDTH: f64 = 431.0;
+const WINDOW_HEIGHT: f64 = 764.0;
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "cmd", rename_all = "snake_case")]
+enum WindowCommand {
+    ResizeWindow { scale: f64 },
+    SetUiScale { scale: f64 },
+}
+
+fn saved_ui_scale() -> f64 {
+    let config = Paths::platform_default().and_then(|paths| Config::load(&paths));
+    match config {
+        Ok(config) if config.ui_scale.is_finite() && (0.5..=1.0).contains(&config.ui_scale) => {
+            config.ui_scale
+        }
+        Ok(config) => {
+            log::warn!("invalid saved UI scale {}, using 1.0", config.ui_scale);
+            1.0
+        }
+        Err(e) => {
+            log::warn!("could not load saved UI scale: {e}");
+            1.0
+        }
+    }
+}
 
 fn main() -> wry::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let initial_scale = saved_ui_scale();
 
     let event_loop = EventLoopBuilder::<String>::with_user_event().build();
     let window = std::sync::Arc::new(
         WindowBuilder::new()
             .with_title("SpotiPod")
-            .with_inner_size(LogicalSize::new(415.0, 692.0))
-            .with_min_inner_size(LogicalSize::new(320.0, 500.0))
-            .with_max_inner_size(LogicalSize::new(600.0, 900.0))
-            .with_resizable(true)
+            .with_inner_size(LogicalSize::new(
+                WINDOW_WIDTH * initial_scale,
+                WINDOW_HEIGHT * initial_scale,
+            ))
+            .with_min_inner_size(LogicalSize::new(WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5))
+            .with_max_inner_size(LogicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT))
+            .with_resizable(false)
             .with_decorations(false)
             .with_transparent(true)
             .build(&event_loop)
@@ -53,7 +84,6 @@ fn main() -> wry::Result<()> {
     let ipc_tx_for_loop = ipc_tx.clone();
 
     let window_for_ipc = window.clone();
-
     let proxy_for_ipc = proxy.clone();
 
     let builder = WebViewBuilder::new()
@@ -97,6 +127,28 @@ fn main() -> wry::Result<()> {
         })
         .with_ipc_handler(move |req| {
             let body = req.body();
+
+            match serde_json::from_str::<WindowCommand>(body) {
+                Ok(WindowCommand::ResizeWindow { scale }) => {
+                    if !scale.is_finite() {
+                        log::warn!("ignored invalid window scale: {scale}");
+                        return;
+                    }
+                    let scale = scale.clamp(0.5, 1.0);
+                    window_for_ipc.set_inner_size(LogicalSize::new(
+                        WINDOW_WIDTH * scale,
+                        WINDOW_HEIGHT * scale,
+                    ));
+                    return;
+                }
+                Ok(WindowCommand::SetUiScale { scale }) => {
+                    if let Err(e) = ipc_tx.send(Cmd::SetUiScale { scale }) {
+                        log::warn!("could not save UI scale: {e}");
+                    }
+                    return;
+                }
+                Err(_) => {}
+            }
 
             if req.body().contains("drag_window") {
                 _ = window_for_ipc.drag_window();

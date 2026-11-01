@@ -243,7 +243,7 @@
     
 
         /* SpotiPod additions */
-        html, body { overflow: hidden; cursor: default; }
+        html, body { width: 100%; height: 100%; min-height: 0; overflow: hidden; cursor: default; }
         .loading-screen.svelte-5htek5 { flex-direction: column; gap: 14px; background: inherit; }
         .loading-screen[hidden] { display: none; }
         .boot-logo { font-size: 30px; }
@@ -275,7 +275,7 @@
             -webkit-app-region: drag; 
         }
 
-        /* .trigger-area {
+        .trigger-area {
             position: absolute;
             bottom: -30px;
             right: -30px;
@@ -331,20 +331,36 @@
         .trigger-area:hover + .resize-handle,
         .resize-handle:hover {
             opacity: 1;
-        } */
+        }
 
-        /* .ipod-host {
+        .ipod-host {
             display: flex;
             justify-content: center;
             align-items: center;
             width: 100%;
             height: 100%;
             max-width: none;
+            transform: none;
+            container-type: normal;
+            container-name: none;
+        }
+
+        .ipod.svelte-4kg78n {
+            --ui-scale: 1;
+            width: 415px;
+            height: 692px;
+            flex: 0 0 415px;
+            transform: scale(var(--ui-scale));
+            transform-origin: center;
+            transition: none;
+            will-change: transform;
         }
 
         body {
+            height: 100%;
+            min-height: 0;
             overflow: hidden;
-        } */
+        }
 
         .menu-title {
             display: none;
@@ -549,14 +565,14 @@
                 <div class="ipod-shadow-inner svelte-4kg78n">
                     <div class="ipod-container svelte-4kg78n">
 
-                        <!-- <div class="trigger-area" id="trigger-area"></div>
+                        <div class="trigger-area" id="trigger-area"></div>
 
                         <div class="resize-handle" id="resize-handle">
                             <svg viewBox="0 0 32 32">
                                 <path d="M 6 12 A 16 16 0 0 0 20 26" fill="none" stroke="transparent" stroke-width="14" stroke-linecap="round" class="resize-hitbox"/>
                                 <path d="M 6 12 A 16 16 0 0 0 20 26" fill="none" stroke="rgba(255, 255, 255, 1)" stroke-width="3.5" stroke-linecap="round"/>
                             </svg>
-                        </div> -->
+                        </div>
 
                         <div class="ipod-screen svelte-4kg78n" id="screen">
                             <div class="pixel-grid"></div>
@@ -689,6 +705,7 @@ const S = {
     phase: 'starting',
     progress: '',
     status: '',
+    ui_scale: 1,
     settings: { shuffle: 'off', repeat: 'off', backlight: 'off', clicker: true, clicker_volume: 100 },
     about: null,
     outputs: [],
@@ -744,7 +761,7 @@ document.querySelector('.animation-button-aux').addEventListener('click', () => 
 });
 
 document.querySelector('.ipod-container').addEventListener('mousedown', (e) => {
-    if (e.target.closest('button') || e.target.closest('.click-wheel') || e.target.closest('.ipod-screen') || e.target.closest('.window-controls')) {
+    if (e.target.closest('button') || e.target.closest('.click-wheel') || e.target.closest('.ipod-screen') || e.target.closest('.window-controls') || e.target.closest('#resize-handle')) {
         return;
     }
     
@@ -753,47 +770,53 @@ document.querySelector('.ipod-container').addEventListener('mousedown', (e) => {
     }
 });
 
-let isResizing = false;
-let startX = 0, startY = 0;
-let startWidth = 415;  // базовый размер
-let startHeight = 692;
+let resizePointerId = null;
+let resizeStartX = 0, resizeStartY = 0, resizeStartScale = 1;
+let resizeFrame = 0, pendingResizeScale = 1;
+const UI_SCALE_MIN = 0.5;
+const UI_SCALE_MAX = 1;
+const ipodElement = document.querySelector('.ipod');
 
 const _resizeHandle = document.getElementById('resize-handle');
-if (_resizeHandle) _resizeHandle.addEventListener('mousedown', (e) => {
-    isResizing = true;
-    startX = e.clientX;
-    startY = e.clientY;
-    
-    // Берем текущие размеры DOM-элемента плеера как базу
-    const container = document.querySelector('.ipod-container');
-    startWidth = container.offsetWidth;
-    startHeight = container.offsetHeight;
-
-    document.body.classList.add('is-resizing');
+if (_resizeHandle) _resizeHandle.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || resizePointerId !== null || !e.target.closest('.resize-hitbox')) return;
+    e.preventDefault();
     e.stopPropagation();
+    resizePointerId = e.pointerId;
+    resizeStartX = e.screenX;
+    resizeStartY = e.screenY;
+    resizeStartScale = Number(getComputedStyle(ipodElement).getPropertyValue('--ui-scale')) || 1;
+    _resizeHandle.setPointerCapture(e.pointerId);
+    document.body.classList.add('is-resizing');
 });
 
-window.addEventListener('mousemove', (e) => {
-    if (!isResizing) return;
-    const deltaX = e.clientX - startX;
-    const deltaY = e.clientY - startY;
-
-    // Считаем АБСОЛЮТНЫЙ новый размер
-    const newWidth = Math.round(startWidth + deltaX);
-    const newHeight = Math.round(startHeight + deltaY);
-
-    if (window.ipc && window.ipc.postMessage) {
-        // Шлем в Rust команду с абсолютными шириной и высотой (width, height)
-        window.ipc.postMessage(JSON.stringify({ cmd: 'resize_to', width: newWidth, height: newHeight }));
+window.addEventListener('pointermove', e => {
+    if (e.pointerId !== resizePointerId) return;
+    const delta = (e.screenX - resizeStartX + e.screenY - resizeStartY) / 830;
+    pendingResizeScale = Math.max(UI_SCALE_MIN, Math.min(UI_SCALE_MAX, resizeStartScale + delta));
+    if (!resizeFrame) {
+        resizeFrame = requestAnimationFrame(() => {
+            resizeFrame = 0;
+            ipodElement.style.setProperty('--ui-scale', pendingResizeScale.toFixed(3));
+            send({ cmd: 'resize_window', scale: pendingResizeScale });
+        });
     }
 });
 
-window.addEventListener('mouseup', () => {
-    if (isResizing) {
-        isResizing = false;
-        document.body.classList.remove('is-resizing');
+function endResize(e) {
+    if (e.pointerId !== resizePointerId) return;
+    if (resizeFrame) {
+        cancelAnimationFrame(resizeFrame);
+        resizeFrame = 0;
+        ipodElement.style.setProperty('--ui-scale', pendingResizeScale.toFixed(3));
     }
-});
+    send({ cmd: 'resize_window', scale: pendingResizeScale });
+    send({ cmd: 'set_ui_scale', scale: pendingResizeScale });
+    resizePointerId = null;
+    document.body.classList.remove('is-resizing');
+}
+window.addEventListener('pointerup', endResize);
+window.addEventListener('pointercancel', endResize);
 
 function menu(id) {
     const s = S.settings;
@@ -1240,6 +1263,10 @@ function receive(msg) {
             phase: msg.phase, progress: msg.progress, status: msg.status,
             settings: msg.settings, about: msg.about, outputs: msg.outputs,
         });
+        S.ui_scale = Math.max(UI_SCALE_MIN, Math.min(UI_SCALE_MAX, msg.ui_scale ?? 1));
+        if (resizePointerId === null) {
+            ipodElement.style.setProperty('--ui-scale', S.ui_scale.toFixed(3));
+        }
         const p = msg.playback;
         if (now - scrubSentAt < HOLD_REMOTE) p.position_ms = position();
         if (localVolume !== null && now - localVolumeAt < HOLD_REMOTE) p.volume = localVolume;

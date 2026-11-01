@@ -36,7 +36,7 @@ This isn't just another music player skin. It's an attempt to recreate the feeli
 SpotiPod is constantly evolving. Here are some of the features and improvements planned for future releases.
 
 - [ ] **Local Music Support** — Play local audio files directly through SpotiPod, without requiring Spotify.
-- [ ] **Resizable Interface** — Customize the size of the SpotiPod player to fit your preferences.
+- [X] **Resizable Interface** — Customize the size of the SpotiPod player to fit your preferences.
 - [ ] **Multiple Audio Sources** — Switch between different audio sources. Initial groundwork is already in place.
 - [X] **Sound Improvements** — Fix existing sound-related bugs and introduce more sound effects to make the experience even closer to the original iPod.
 - [ ] **Additional Music Platforms** — Expand beyond Spotify and local music files by adding support for other music websites and platforms.
