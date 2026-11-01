@@ -717,6 +717,7 @@ const S = {
     phase: 'starting',
     progress: '',
     status: '',
+    update: { current_version: '', version: null, available: false, status: 'checking', message: null },
     ui_scale: 1,
     settings: { shuffle: 'off', repeat: 'off', backlight: 'off', clicker: true, clicker_volume: 100 },
     about: null,
@@ -1234,6 +1235,9 @@ function menu(id) {
             { label: 'Settings', next: 'settings' },
             { label: 'Extras', next: 'extras' },
         ];
+        if (S.update.available) {
+            items.unshift({ label: `Update v${S.update.version}`, next: 'update' });
+        }
         if (S.playback.track) items.push({ label: 'Now Playing', act: showNowPlaying });
         return { title: 'iPod', ...rows(items) };
     }
@@ -1249,9 +1253,34 @@ function menu(id) {
             { label: 'Backlight Timer', next: 'backlight' },
             { label: 'Clicker', value: s.clicker ? 'On' : 'Off', act: () => setSettings({ clicker: !s.clicker }) },
             { label: 'Clicker Volume', value: `${clickerVolume()}%`, next: 'clicker_volume' },
+            { label: 'Check for Updates', act: () => {
+                send({ cmd: 'check_for_updates' });
+                push('update');
+            } },
             { label: 'Reset All Settings', next: 'reset' },
             { label: 'Log Out', next: 'logout' },
         ]) };
+    case 'update': {
+        const status = S.update.message
+            || (S.update.status === 'checking' ? 'Checking GitHub...'
+                : S.update.status === 'installing' ? 'Installing update...'
+                    : S.update.status === 'current' ? 'You have the latest version.'
+                        : S.update.status === 'unsupported' ? 'Updates are supported on macOS only.'
+                            : S.update.available ? 'A new version is ready to install.'
+                                : 'No update available.');
+        return { title: 'Software Update', ...rows([
+            { label: 'Current', value: `v${S.update.current_version}`, info: true },
+            ...(S.update.available ? [{ label: 'Available', value: `v${S.update.version}`, info: true }] : []),
+            { label: status, info: true },
+            ...(S.update.available && S.update.status !== 'installing'
+                ? [{ label: 'Install Update', act: () => send({ cmd: 'install_update', version: S.update.version }) }]
+                : []),
+            ...(S.update.status === 'error'
+                ? [{ label: 'Try Again', act: () => send({ cmd: 'check_for_updates' }) }]
+                : []),
+            { label: 'Done', act: back },
+        ]) };
+    }
     case 'extras':
         return { title: 'Extras', ...rows([
             { label: 'Calendar', act: openCalendar },
@@ -1772,13 +1801,16 @@ function scrub(steps) {
 
 // --- Messages from Rust ---
 function receive(msg) {
-    if (msg.type === 'state') {
+    if (msg.type === 'restart_for_update') {
+        send({ cmd: 'quit' });
+    } else if (msg.type === 'state') {
         const wasPhase = S.phase;
         const now = performance.now();
         // if (msg.status && msg.status !== S.status) showToast(msg.status);
         Object.assign(S, {
             phase: msg.phase, progress: msg.progress, status: msg.status,
             settings: msg.settings, about: msg.about, outputs: msg.outputs,
+            update: msg.update ?? S.update,
         });
         S.ui_scale = Math.max(UI_SCALE_MIN, Math.min(UI_SCALE_MAX, msg.ui_scale ?? 1));
         if (resizePointerId === null) {

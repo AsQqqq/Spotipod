@@ -37,6 +37,7 @@ SpotiPod is constantly evolving. Here are some of the features and improvements 
 
 - [ ] **Local Music Support** — Play local audio files directly through SpotiPod, without requiring Spotify.
 - [ ] **Additional Music Platforms** — Expand beyond Spotify and local music files by adding support for other music websites and platforms.
+- [ ] **Automatic Updates for Windows and Linux** — Extend the current macOS updater to download and install updates on Windows and Linux.
 
 This roadmap represents the current direction of development and may change over time.
 

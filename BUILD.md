@@ -86,6 +86,25 @@ The workspace defines a release profile with thin link-time optimization, a sing
 
 Note: A release build has not yet been verified by the project maintainer. This command builds the Rust executable; it does not by itself create a signed, notarized, or packaged macOS .app bundle or installer.
 
+## GitHub Actions draft releases
+
+The `.github/workflows/release.yml` workflow runs only when a commit is pushed to `main`. It reads the release version from `[workspace.package].version` in the root `Cargo.toml`, and reads the enabled build platforms from `release.toml`:
+
+```toml
+[platforms]
+macos = true
+windows = false
+linux = false
+```
+
+Set a platform to `true` to build it. macOS produces a universal Intel/Apple Silicon executable archive; Windows and Linux produce x64 executable archives. The workflow skips the build if the configured version matches the latest published (non-draft, non-prerelease) GitHub release.
+
+After all selected platform builds succeed, the workflow creates a Git tag named exactly after the configured version and attaches the archives to a **draft** GitHub release. Review and publish that draft manually. These archives are unsigned executables, not platform installers. Windows and Linux builds are not yet verified by the project maintainer.
+
+### In-app updates
+
+On macOS, SpotiPod checks GitHub for the latest published stable release at startup. When it finds a newer version, an **Update** item appears at the top of the main menu. You can also check from **Settings → Check for Updates**. Choosing **Install Update** downloads the macOS universal archive, verifies its GitHub SHA-256 digest when available, and restarts SpotiPod with the new executable. The directory containing the running executable must be writable. Draft releases are not visible to the updater; publish the draft before users can receive it. In-app installation is currently macOS-only; Windows and Linux support is on the README roadmap.
+
 ## Reproducible builds with Cargo.lock
 
 The repository includes Cargo.lock. To ask Cargo to use the locked dependency versions and fail if the lockfile would need updating, add --locked:

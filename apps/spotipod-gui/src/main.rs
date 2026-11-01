@@ -24,7 +24,7 @@ const QUIT_TIMEOUT: Duration = Duration::from_secs(3);
 
 const LOGOTYPE_SVG: &[u8] = include_bytes!("../../../assets/logotype.svg");
 const SPOTIPOD_SVG: &[u8] = include_bytes!("../../../assets/spotipod.svg");
-const UI_CLICK_MP3: &[u8] = include_bytes!("../../../ipod_/ui_.mp3");
+const UI_CLICK_MP3: &[u8] = include_bytes!("../../../assets/ui_.mp3");
 const WINDOW_WIDTH: f64 = 431.0;
 const WINDOW_HEIGHT: f64 = 764.0;
 

@@ -7,6 +7,13 @@ use std::{
     time::Duration,
 };
 
+#[cfg(target_os = "macos")]
+use std::{
+    fs,
+    path::Path,
+    process::{Command, Stdio},
+};
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 use spotipod_core::{
@@ -17,6 +24,9 @@ use tokio::sync::mpsc;
 
 /// Tracks resolved per batch; the page asks for the next one while scrolling.
 const BATCH: usize = 200;
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const RELEASE_API: &str = "https://api.github.com/repos/AsQqqq/SpotiPOD/releases/latest";
+const RELEASE_ASSET_PREFIX: &str = "https://github.com/AsQqqq/SpotiPOD/releases/download/";
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -59,6 +69,10 @@ pub enum Cmd {
     /// System output device id.
     SetOutput {
         id: String,
+    },
+    CheckForUpdates,
+    InstallUpdate {
+        version: String,
     },
     /// Window closing: stop cleanly.
     #[serde(skip)]
@@ -106,6 +120,11 @@ struct Data {
     /// Track lists by context URI.
     lists: HashMap<String, TrackList>,
     library: Option<Library>,
+    update_version: Option<String>,
+    update_url: Option<String>,
+    update_digest: Option<String>,
+    update_status: String,
+    update_message: Option<String>,
 }
 
 struct TrackList {
@@ -245,21 +264,21 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Cmd>, sink: Sink) {
                     _ => {}
                 }
                 let mut state = sp.state();
-                
+
                 // Если у текущего трека имя неполное или техническое, ищем его в наших локальных списках
                 if let Some(ref mut track) = state.track {
                     let uri = track.uri.clone();
                     if track.name.is_empty() || track.name.starts_with("spotify:") || track.name == "Loading..." || track.name.starts_with("Track ") {
                         let d = ctx.data.lock().unwrap();
                         let mut found_track = None;
-                        
+
                         for list in d.lists.values() {
                             if let Some(t) = list.tracks.iter().find(|t| t.uri == uri) {
                                 found_track = Some(t.clone());
                                 break;
                             }
                         }
-                        
+
                         if let Some(t) = found_track {
                             track.name = t.name;
                             track.artists = t.artists;
@@ -403,6 +422,7 @@ async fn handle(ctx: &Arc<Ctx>, sp: &mut Spotipod, cmd: Cmd) {
         Cmd::Ready => {
             ctx.update(|_| {});
             ctx.send_library();
+            check_for_updates(ctx.clone());
         }
         Cmd::Login => {
             ctx.update(|d| {
@@ -469,13 +489,422 @@ async fn handle(ctx: &Arc<Ctx>, sp: &mut Spotipod, cmd: Cmd) {
             tokio::time::sleep(Duration::from_millis(200)).await;
             refresh_outputs(ctx, sp);
         }
+        Cmd::CheckForUpdates => check_for_updates(ctx.clone()),
+        Cmd::InstallUpdate { version } => install_update(ctx.clone(), version),
         Cmd::Quit => {}
     }
 }
 
+#[derive(Clone, Debug)]
+struct UpdateRelease {
+    version: String,
+    url: String,
+    digest: Option<String>,
+}
+
+fn check_for_updates(ctx: Arc<Ctx>) {
+    #[cfg(not(target_os = "macos"))]
+    {
+        ctx.update(|data| {
+            data.update_status = "unsupported".into();
+            data.update_message =
+                Some("Automatic updates are currently supported on macOS only.".into());
+        });
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        {
+            let mut data = ctx.data.lock().unwrap();
+            if data.update_status == "checking" || data.update_status == "installing" {
+                return;
+            }
+            data.update_status = "checking".into();
+            data.update_message = None;
+        }
+        ctx.update(|_| {});
+
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(latest_release).await;
+            match result {
+                Ok(Ok(release)) => {
+                    let mut data = ctx.data.lock().unwrap();
+                    if let Some(release) = release {
+                        data.update_version = Some(release.version);
+                        data.update_url = Some(release.url);
+                        data.update_digest = release.digest;
+                        data.update_status = "available".into();
+                        data.update_message = None;
+                    } else {
+                        data.update_version = None;
+                        data.update_url = None;
+                        data.update_digest = None;
+                        data.update_status = "current".into();
+                        data.update_message = None;
+                    }
+                    let state = state_json(&data);
+                    drop(data);
+                    ctx.send(state);
+                }
+                Ok(Err(error)) => {
+                    log::warn!("update check failed: {error}");
+                    ctx.update(|data| {
+                        data.update_status = "error".into();
+                        data.update_message = Some(error);
+                    });
+                }
+                Err(error) => {
+                    log::warn!("update check task failed: {error}");
+                    ctx.update(|data| {
+                        data.update_status = "error".into();
+                        data.update_message = Some(error.to_string());
+                    });
+                }
+            }
+        });
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn latest_release() -> Result<Option<UpdateRelease>, String> {
+    let response = Command::new("/usr/bin/curl")
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--max-time",
+            "20",
+            "--user-agent",
+            concat!("SpotiPod/", env!("CARGO_PKG_VERSION")),
+            "--header",
+            "Accept: application/vnd.github+json",
+            RELEASE_API,
+        ])
+        .output()
+        .map_err(|error| format!("could not start GitHub request: {error}"))?;
+    if !response.status.success() {
+        return Err(format!(
+            "GitHub API request failed: {}",
+            String::from_utf8_lossy(&response.stderr).trim()
+        ));
+    }
+    let release: Value = serde_json::from_slice(&response.stdout)
+        .map_err(|error| format!("invalid GitHub release response: {error}"))?;
+    parse_release_response(release)
+}
+
+fn parse_release_response(release: Value) -> Result<Option<UpdateRelease>, String> {
+    let tag = release["tag_name"]
+        .as_str()
+        .ok_or("GitHub release has no tag name")?;
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    if compare_versions(version, CURRENT_VERSION).is_none_or(|ordering| !ordering.is_gt()) {
+        return Ok(None);
+    }
+
+    let expected_asset = format!("SpotiPod-{version}-macOS-universal.zip");
+    let assets = release["assets"]
+        .as_array()
+        .ok_or("GitHub release has no assets")?;
+    let asset = assets
+        .iter()
+        .find(|asset| asset["name"].as_str() == Some(&expected_asset))
+        .ok_or_else(|| format!("GitHub release is missing {expected_asset}"))?;
+    let url = asset["browser_download_url"]
+        .as_str()
+        .ok_or("GitHub release asset has no download URL")?;
+    if !url.starts_with(RELEASE_ASSET_PREFIX) {
+        return Err("GitHub release asset URL is not trusted".into());
+    }
+
+    Ok(Some(UpdateRelease {
+        version: version.into(),
+        url: url.into(),
+        digest: asset["digest"].as_str().map(str::to_owned),
+    }))
+}
+
+fn compare_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
+    fn parts(version: &str) -> Option<[u64; 3]> {
+        if version.is_empty()
+            || version.len() > 64
+            || !version
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
+        {
+            return None;
+        }
+        let stable = version.split(['-', '+']).next()?;
+        let mut numbers = stable.split('.').map(str::parse::<u64>);
+        let result = [
+            numbers.next()?.ok()?,
+            numbers.next()?.ok()?,
+            numbers.next()?.ok()?,
+        ];
+        if numbers.next().is_some() {
+            return None;
+        }
+        Some(result)
+    }
+    Some(parts(left)?.cmp(&parts(right)?))
+}
+
+fn install_update(ctx: Arc<Ctx>, version: String) {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = version;
+        ctx.update(|data| {
+            data.update_status = "unsupported".into();
+            data.update_message =
+                Some("Automatic updates are currently supported on macOS only.".into());
+        });
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let release = {
+            let mut data = ctx.data.lock().unwrap();
+            if data.update_status == "installing" {
+                return;
+            }
+            if data.update_version.as_deref() != Some(&version) {
+                drop(data);
+                ctx.update(|data| {
+                    data.update_status = "error".into();
+                    data.update_message =
+                        Some("The selected update is no longer available. Check again.".into());
+                });
+                return;
+            }
+            data.update_status = "installing".into();
+            data.update_message = Some("Downloading and verifying the update…".into());
+            let Some(url) = data.update_url.clone() else {
+                drop(data);
+                ctx.update(|data| {
+                    data.update_status = "error".into();
+                    data.update_message =
+                        Some("Update download information is missing. Check again.".into());
+                });
+                return;
+            };
+            UpdateRelease {
+                version,
+                url,
+                digest: data.update_digest.clone(),
+            }
+        };
+        ctx.update(|_| {});
+
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || stage_update(&release)).await;
+            match result {
+                Ok(Ok(())) => {
+                    ctx.send(json!({ "type": "restart_for_update" }));
+                }
+                Ok(Err(error)) => {
+                    log::warn!("update installation failed: {error}");
+                    ctx.update(|data| {
+                        data.update_status = "error".into();
+                        data.update_message = Some(error);
+                    });
+                }
+                Err(error) => {
+                    log::warn!("update installation task failed: {error}");
+                    ctx.update(|data| {
+                        data.update_status = "error".into();
+                        data.update_message = Some(error.to_string());
+                    });
+                }
+            }
+        });
+    }
+}
+
+fn stage_update(release: &UpdateRelease) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = release;
+        return Err("automatic updates are currently supported on macOS only".into());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let directory = std::env::temp_dir().join(format!(
+            "spotipod-update-{}-{}",
+            std::process::id(),
+            release.version
+        ));
+        fs::create_dir(&directory).map_err(|error| {
+            format!(
+                "could not create update directory {}: {error}",
+                directory.display()
+            )
+        })?;
+
+        let result = stage_update_in(&directory, release);
+        if result.is_err() {
+            if let Err(error) = fs::remove_dir_all(&directory) {
+                log::warn!("could not clean up update directory: {error}");
+            }
+        }
+        result
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn stage_update_in(directory: &Path, release: &UpdateRelease) -> Result<(), String> {
+    let archive = directory.join("release.zip");
+    let response = Command::new("/usr/bin/curl")
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--max-time",
+            "300",
+            "--user-agent",
+            concat!("SpotiPod/", env!("CARGO_PKG_VERSION")),
+            "--output",
+        ])
+        .arg(&archive)
+        .arg(&release.url)
+        .output()
+        .map_err(|error| format!("could not start release download: {error}"))?;
+    if !response.status.success() {
+        return Err(format!(
+            "release download failed: {}",
+            String::from_utf8_lossy(&response.stderr).trim()
+        ));
+    }
+
+    if let Some(expected_digest) = release.digest.as_deref() {
+        verify_sha256(&archive, expected_digest)?;
+    }
+
+    let listing = Command::new("/usr/bin/unzip")
+        .arg("-Z1")
+        .arg(&archive)
+        .output()
+        .map_err(|error| format!("could not inspect release archive: {error}"))?;
+    if !listing.status.success()
+        || String::from_utf8_lossy(&listing.stdout).trim() != "spotipod-gui"
+    {
+        return Err("release archive does not contain the expected application binary".into());
+    }
+
+    let extracted = directory.join("extracted");
+    fs::create_dir(&extracted).map_err(|error| format!("could not prepare archive: {error}"))?;
+    let extraction = Command::new("/usr/bin/ditto")
+        .args(["-x", "-k"])
+        .arg(&archive)
+        .arg(&extracted)
+        .output()
+        .map_err(|error| format!("could not extract release archive: {error}"))?;
+    if !extraction.status.success() {
+        return Err(format!(
+            "release extraction failed: {}",
+            String::from_utf8_lossy(&extraction.stderr).trim()
+        ));
+    }
+
+    let replacement = extracted.join("spotipod-gui");
+    if !replacement.is_file() {
+        return Err("downloaded application binary is missing".into());
+    }
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("could not locate current application: {error}"))?;
+    verify_install_location(&executable)?;
+    launch_update_helper(directory, &executable, &replacement)
+}
+
+#[cfg(target_os = "macos")]
+fn verify_install_location(executable: &Path) -> Result<(), String> {
+    let parent = executable
+        .parent()
+        .ok_or("current application has no parent directory")?;
+    let probe = parent.join(format!(
+        ".spotipod-update-write-check-{}",
+        std::process::id()
+    ));
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .map_err(|error| {
+            format!(
+                "application directory {} is not writable: {error}",
+                parent.display()
+            )
+        })?;
+    fs::remove_file(probe).map_err(|error| format!("could not remove update check file: {error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn verify_sha256(archive: &Path, expected: &str) -> Result<(), String> {
+    let expected = expected
+        .strip_prefix("sha256:")
+        .ok_or("GitHub release asset has an unsupported digest")?;
+    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("GitHub release asset has an invalid SHA-256 digest".into());
+    }
+    let output = Command::new("/usr/bin/shasum")
+        .args(["-a", "256"])
+        .arg(archive)
+        .output()
+        .map_err(|error| format!("could not verify update checksum: {error}"))?;
+    if !output.status.success() {
+        return Err("could not calculate update checksum".into());
+    }
+    let actual = String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if actual != expected.to_ascii_lowercase() {
+        return Err("downloaded update checksum does not match GitHub".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn launch_update_helper(
+    directory: &Path,
+    executable: &Path,
+    replacement: &Path,
+) -> Result<(), String> {
+    let helper = directory.join("install-update.sh");
+    let script = r#"#!/bin/sh
+set -eu
+pid="$1"
+target="$2"
+replacement="$3"
+temporary="${target}.spotipod-update.$$"
+while kill -0 "$pid" 2>/dev/null; do sleep 1; done
+cp "$replacement" "$temporary"
+chmod 755 "$temporary"
+mv -f "$temporary" "$target"
+"$target" >/dev/null 2>&1 &
+"#;
+    fs::write(&helper, script).map_err(|error| format!("could not prepare installer: {error}"))?;
+    Command::new("/bin/sh")
+        .arg(&helper)
+        .arg(std::process::id().to_string())
+        .arg(executable)
+        .arg(replacement)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("could not start update installer: {error}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::preserve_output_order;
+    use super::{compare_versions, parse_release_response, preserve_output_order};
     use spotipod_core::OutputDevice;
 
     #[test]
@@ -520,6 +949,54 @@ mod tests {
             ["a", "b", "c"],
         );
         assert!(refreshed[1].is_default);
+    }
+
+    #[test]
+    fn update_version_comparison_uses_numeric_components() {
+        assert!(compare_versions("1.10.0", "1.9.9").unwrap().is_gt());
+        assert!(compare_versions("0.1.0", "0.1.0").unwrap().is_eq());
+        assert!(compare_versions("0.1.0", "0.2.0").unwrap().is_lt());
+        assert!(compare_versions("../0.2.0", "0.1.0").is_none());
+    }
+
+    #[test]
+    fn latest_release_selects_only_a_newer_macos_asset() {
+        let release = serde_json::json!({
+            "tag_name": "v999.0.0",
+            "assets": [{
+                "name": "SpotiPod-999.0.0-macOS-universal.zip",
+                "browser_download_url": "https://github.com/AsQqqq/SpotiPOD/releases/download/v999.0.0/SpotiPod.zip",
+                "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            }]
+        });
+        let parsed = parse_release_response(release).unwrap().unwrap();
+        assert_eq!(parsed.version, "999.0.0");
+        assert_eq!(
+            parsed.url,
+            "https://github.com/AsQqqq/SpotiPOD/releases/download/v999.0.0/SpotiPod.zip"
+        );
+        assert!(parsed.digest.is_some());
+    }
+
+    #[test]
+    fn latest_release_ignores_the_current_version() {
+        let release = serde_json::json!({
+            "tag_name": "v0.1.0",
+            "assets": []
+        });
+        assert!(parse_release_response(release).unwrap().is_none());
+    }
+
+    #[test]
+    fn latest_release_rejects_untrusted_asset_urls() {
+        let release = serde_json::json!({
+            "tag_name": "v999.0.0",
+            "assets": [{
+                "name": "SpotiPod-999.0.0-macOS-universal.zip",
+                "browser_download_url": "https://attacker.invalid/SpotiPod.zip"
+            }]
+        });
+        assert!(parse_release_response(release).is_err());
     }
 }
 
@@ -617,6 +1094,13 @@ fn state_json(d: &Data) -> Value {
         "phase": d.phase.name(),
         "progress": d.progress,
         "status": d.status,
+        "update": {
+            "current_version": CURRENT_VERSION,
+            "version": d.update_version,
+            "available": d.update_version.is_some(),
+            "status": d.update_status,
+            "message": d.update_message,
+        },
         "settings": d.settings,
         "ui_scale": d.ui_scale,
         "about": d.about.as_ref().map(|a| json!({

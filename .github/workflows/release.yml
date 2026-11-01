@@ -1,0 +1,183 @@
+name: Build and draft release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.config.outputs.version }}
+      matrix: ${{ steps.config.outputs.matrix }}
+      should_release: ${{ steps.release.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version and build platforms
+        id: config
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import tomllib
+          from pathlib import Path
+
+          with Path("Cargo.toml").open("rb") as file:
+              version = tomllib.load(file)["workspace"]["package"]["version"]
+          with Path("release.toml").open("rb") as file:
+              platforms = tomllib.load(file)["platforms"]
+
+          runners = {
+              "macos": {"os": "macos-14", "target": "x86_64-apple-darwin,aarch64-apple-darwin"},
+              "windows": {"os": "windows-latest", "target": "x86_64-pc-windows-msvc"},
+              "linux": {"os": "ubuntu-22.04", "target": "x86_64-unknown-linux-gnu"},
+          }
+          matrix = [
+              {"platform": platform, **runner}
+              for platform, runner in runners.items()
+              if platforms.get(platform) is True
+          ]
+          if not matrix:
+              raise SystemExit("Enable at least one platform in release.toml")
+
+          print(f"version={version}")
+          print("matrix=" + json.dumps({"include": matrix}, separators=(",", ":")))
+          PY
+
+      - name: Skip if this version is already the latest release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.config.outputs.version }}
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Releases can only be built from main." >&2
+            exit 1
+          fi
+
+          latest_tag="$(gh release list --limit 100 --json tagName,isDraft,isPrerelease \
+            --jq '[.[] | select(.isDraft == false and .isPrerelease == false)][0].tagName // ""')"
+          latest_version="${latest_tag#v}"
+
+          if [[ "$latest_version" == "$VERSION" ]]; then
+            echo "Version $VERSION is already the latest release; skipping build."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux webview dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build universal macOS binary
+        if: matrix.platform == 'macos'
+        env:
+          TARGETS: ${{ matrix.target }}
+        run: |
+          IFS=',' read -r intel_target arm_target <<< "$TARGETS"
+          rustup target add "$intel_target" "$arm_target"
+          cargo build --locked --release -p spotipod-gui --target "$intel_target"
+          cargo build --locked --release -p spotipod-gui --target "$arm_target"
+
+      - name: Build Windows or Linux binary
+        if: matrix.platform != 'macos'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --locked --release -p spotipod-gui --target "$TARGET"
+
+      - name: Package macOS universal binary
+        if: matrix.platform == 'macos'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          mkdir -p dist
+          lipo -create \
+            target/x86_64-apple-darwin/release/spotipod-gui \
+            target/aarch64-apple-darwin/release/spotipod-gui \
+            -output dist/spotipod-gui
+          cd dist
+          zip -9 "SpotiPod-${VERSION}-macOS-universal.zip" spotipod-gui
+
+      - name: Package Windows binary
+        if: matrix.platform == 'windows'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "target/$env:TARGET/release/spotipod-gui.exe" dist/
+          Compress-Archive -Path dist/spotipod-gui.exe `
+            -DestinationPath "dist/SpotiPod-${env:VERSION}-windows-x64.zip"
+
+      - name: Package Linux binary
+        if: matrix.platform == 'linux'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p dist
+          cp "target/${TARGET}/release/spotipod-gui" dist/
+          tar -C dist -czf "dist/SpotiPod-${VERSION}-linux-x64.tar.gz" spotipod-gui
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.platform }}
+          path: dist/SpotiPod-*
+          if-no-files-found: error
+
+  draft-release:
+    needs:
+      - prepare
+      - build
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create version tag and draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          gh release create "$VERSION" dist/SpotiPod-* \
+            --draft \
+            --title "SpotiPod $VERSION" \
+            --target "$GITHUB_SHA" \
+            --generate-notes
