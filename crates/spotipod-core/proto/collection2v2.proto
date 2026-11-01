@@ -1,0 +1,25 @@
+// Subset of Spotify's collection2v2.proto (as shipped by librespot-protocol, not compiled there).
+
+syntax = "proto3";
+
+package spotify.collection.proto.v2;
+
+message PageRequest {
+    string username = 1;
+    string set = 2;
+    string pagination_token = 3;
+    int32 limit = 4;
+}
+
+message CollectionItem {
+    string uri = 1;
+    int32 added_at = 2;
+    bool is_removed = 3;
+    optional string context_uri = 4;
+}
+
+message PageResponse {
+    repeated CollectionItem items = 1;
+    string next_page_token = 2;
+    string sync_token = 3;
+}
