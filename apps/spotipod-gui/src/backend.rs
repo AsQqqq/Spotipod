@@ -25,8 +25,8 @@ use tokio::sync::mpsc;
 /// Tracks resolved per batch; the page asks for the next one while scrolling.
 const BATCH: usize = 200;
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const RELEASE_API: &str = "https://api.github.com/repos/AsQqqq/SpotiPOD/releases/latest";
-const RELEASE_ASSET_PREFIX: &str = "https://github.com/AsQqqq/SpotiPOD/releases/download/";
+const RELEASE_API: &str = "https://api.github.com/repos/AsQqqq/Spotipod/releases/latest";
+const RELEASE_ASSET_PREFIX: &str = "https://github.com/AsQqqq/Spotipod/releases/download/";
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -981,7 +981,7 @@ mod tests {
             "tag_name": "v999.0.0",
             "assets": [{
                 "name": "SpotiPod-999.0.0-macOS-universal.zip",
-                "browser_download_url": "https://github.com/AsQqqq/SpotiPOD/releases/download/v999.0.0/SpotiPod.zip",
+                "browser_download_url": "https://github.com/AsQqqq/Spotipod/releases/download/v999.0.0/SpotiPod.zip",
                 "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             }]
         });
@@ -989,7 +989,7 @@ mod tests {
         assert_eq!(parsed.version, "999.0.0");
         assert_eq!(
             parsed.url,
-            "https://github.com/AsQqqq/SpotiPOD/releases/download/v999.0.0/SpotiPod.zip"
+            "https://github.com/AsQqqq/Spotipod/releases/download/v999.0.0/SpotiPod.zip"
         );
         assert!(parsed.digest.is_some());
     }
