@@ -1616,6 +1616,15 @@ function render() {
             li.addEventListener('click', () => { t.sel = i; select(); });
             list.appendChild(li);
         }
+
+        // Next batch while scrolling.
+        if (m.context) {
+            const l = lists[m.context];
+            if (l && !l.done && !l.requested && t.sel + PREFETCH >= l.tracks.length) {
+                l.requested = true;
+                send({ cmd: 'more', context: m.context });
+            }
+        }
     } catch (e) {
         //! ERROR? UNCOMMENT THIS TO SHOW IT ON THE SCREEN
 

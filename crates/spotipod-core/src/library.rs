@@ -2,10 +2,10 @@
 //! official clients. Only the user's account is needed: no developer app, no Web API.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -13,19 +13,30 @@ use futures_util::{StreamExt, stream};
 use librespot::{
     core::{error::ErrorKind, session::Session, spotify_uri::SpotifyUri},
     metadata::{Album as LsAlbum, Metadata, Track as LsTrack, image::Images},
-    protocol::{context_page::ContextPage, playlist4_external::SelectedListContent},
+    protocol::{
+        context_page::ContextPage,
+        extended_metadata::{BatchedEntityRequest, EntityRequest, ExtensionQuery},
+        extension_kind::ExtensionKind,
+        metadata::Track as TrackProto,
+        playlist4_external::SelectedListContent,
+    },
 };
-use protobuf::Message;
+use protobuf::{EnumOrUnknown, Message};
 
 use crate::{
     cache::{LibraryCache, REFRESH_EVERY},
     error::{CoreError, Result},
     model::{Album, Page, Playlist, Track},
     proto::collection2v2::{PageRequest, PageResponse},
+    telemetry,
 };
 
 /// Parallel metadata requests.
 const CONCURRENCY: usize = 16;
+/// Tracks per extended-metadata request.
+const METADATA_BATCH: usize = 100;
+/// Parallel extended-metadata requests.
+const METADATA_BATCH_CONCURRENCY: usize = 4;
 /// Collection set holding liked tracks and saved albums.
 const COLLECTION_SET: &str = "collection";
 const COLLECTION_PAGE: i32 = 300;
@@ -100,7 +111,10 @@ impl Library {
     }
 
     async fn fetch_playlists(&self) -> Result<Vec<Playlist>> {
-        let raw = self.session.spclient().get_rootlist(0, Some(500)).await?;
+        let raw = telemetry::span("rootlist").result(
+            self.session.spclient().get_rootlist(0, Some(500)).await,
+            |b| (b.len(), 0),
+        )?;
         let msg = SelectedListContent::parse_from_bytes(&raw)
             .map_err(|e| CoreError::Library(e.to_string()))?;
 
@@ -155,8 +169,10 @@ impl Library {
         }
         let uris: Vec<SpotifyUri> = match parse_uri(context_uri)? {
             uri @ SpotifyUri::Playlist { .. } => self.playlist_uris(&uri).await?,
-            uri @ SpotifyUri::Album { .. } => LsAlbum::get(&self.session, &uri)
-                .await?
+            uri @ SpotifyUri::Album { .. } => telemetry::span("metadata/album")
+                .result(LsAlbum::get(&self.session, &uri).await, |a| {
+                    (0, a.tracks().count())
+                })?
                 .tracks()
                 .cloned()
                 .collect(),
@@ -199,7 +215,7 @@ impl Library {
 
     /// Number of liked songs.
     pub async fn liked_count(&self) -> Result<u32> {
-        Ok(self.context_uris(&self.liked_uri()).await?.len() as u32)
+        Ok(self.track_uris(&self.liked_uri()).await?.len() as u32)
     }
 
     fn liked_uri(&self) -> String {
@@ -218,14 +234,23 @@ impl Library {
         let mut last_first: Option<String> = None;
         loop {
             let endpoint = format!("/playlist/v2/playlist/{id}?from={pos}&length={PLAYLIST_PAGE}");
-            let raw = self
+            let span = telemetry::span("playlist/v2 window");
+            let raw = match self
                 .session
                 .spclient()
                 .request(&http::Method::GET, &endpoint, None, None)
-                .await?;
+                .await
+            {
+                Ok(raw) => raw,
+                Err(e) => {
+                    span.fail(&e);
+                    return Err(e.into());
+                }
+            };
             let msg = SelectedListContent::parse_from_bytes(&raw)
                 .map_err(|e| CoreError::Library(e.to_string()))?;
             let items = &msg.contents.items;
+            span.ok(raw.len(), items.len());
             // The window may be smaller than asked and `length` may be absent: read until an
             // empty window, stopping early only on a known total.
             let first = items.first().map(|i| i.uri().to_owned());
@@ -250,14 +275,20 @@ impl Library {
 
     /// Every track of a context, following all its pages in order.
     async fn context_uris(&self, context_uri: &str) -> Result<Vec<SpotifyUri>> {
-        let ctx = self.session.spclient().get_context(context_uri).await?;
+        let ctx = telemetry::span("context").result(
+            self.session.spclient().get_context(context_uri).await,
+            |c| (0, c.pages.iter().map(|p| p.tracks.len()).sum()),
+        )?;
         let mut uris = Vec::new();
         let mut queue = VecDeque::new();
         for page in &ctx.pages {
             take_page(page, &mut uris, &mut queue);
         }
         while let Some(url) = queue.pop_front() {
-            let raw = self.session.spclient().get_next_page(&url).await?;
+            let raw = telemetry::span("context page")
+                .result(self.session.spclient().get_next_page(&url).await, |b| {
+                    (b.len(), 0)
+                })?;
             let json = String::from_utf8_lossy(&raw);
             let page: ContextPage = protobuf_json_mapping::parse_from_str_with_options(
                 &json,
@@ -324,7 +355,7 @@ impl Library {
                 req.pagination_token = t.clone();
             }
             req.limit = COLLECTION_PAGE;
-            
+
             let raw = self
                 .collection_request("/collection/v2/paging", &req)
                 .await?;
@@ -348,6 +379,10 @@ impl Library {
     /// `product` / `country` / `salt` query params, a likely cause of its 400 responses.
     async fn collection_request<M: Message>(&self, endpoint: &str, msg: &M) -> Result<Bytes> {
         use http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+        use http_body_util::BodyExt;
+        // The collection service only takes its own media type (400 for x-protobuf).
+        const MEDIA_TYPE: &str = "application/vnd.collection-v2.spotify.proto";
+
         let spclient = self.session.spclient();
         let url = format!("{}{endpoint}", spclient.base_url().await?);
         let body = msg
@@ -355,49 +390,115 @@ impl Library {
             .map_err(|e| CoreError::Library(e.to_string()))?;
         let token = self.session.login5().auth_token().await?;
         let mut req = http::Request::post(&url)
-            .header(CONTENT_TYPE, "application/x-protobuf")
-            .header(ACCEPT, "application/x-protobuf")
+            .header(CONTENT_TYPE, MEDIA_TYPE)
+            .header(ACCEPT, MEDIA_TYPE)
             .header(
                 AUTHORIZATION,
                 format!("{} {}", token.token_type, token.access_token),
             )
             .body(Bytes::from(body))
             .map_err(|e| CoreError::Library(e.to_string()))?;
-
-        if let Ok(ct) = spclient.client_token().await {
-            if let Ok(v) = http::HeaderValue::from_str(&ct) {
-                req.headers_mut().insert("client-token", v);
-            }
+        if let Ok(ct) = spclient.client_token().await
+            && let Ok(v) = http::HeaderValue::from_str(&ct)
+        {
+            req.headers_mut().insert("client-token", v);
         }
 
-        match self.session.http_client().request_body(req).await {
-            Ok(bytes) => Ok(bytes),
+        let span = telemetry::span(endpoint.trim_start_matches('/'));
+        let res = match self.session.http_client().request_fut(req) {
+            Ok(fut) => fut.await.map_err(|e| CoreError::Library(e.to_string())),
+            Err(e) => Err(e.into()),
+        };
+        let res = match res {
+            Ok(res) => res,
             Err(e) => {
-                log::error!("collection_request to {url} failed: {e:?}");
-                Err(e.into())
+                span.fail(&e);
+                return Err(e);
             }
-        }
-    }
-
-    async fn resolve_uris(&self, uris: Vec<SpotifyUri>) -> Vec<Track> {
-        stream::iter(uris)
-            .map(|uri| {
-                let session = self.session.clone();
-                let cache = self.cache.clone();
-                async move {
-                    let key = uri.to_uri().ok()?;
-                    if let Some(t) = cache.lock().unwrap().tracks.get(&key) {
-                        return Some(t.clone());
-                    }
-                    let track = resolve_track(&session, uri).await?;
-                    cache.lock().unwrap().tracks.insert(key, track.clone());
-                    Some(track)
-                }
-            })
-            .buffered(CONCURRENCY)
-            .filter_map(|t| async move { t })
+        };
+        let status = res.status();
+        let bytes = res
+            .into_body()
             .collect()
             .await
+            .map(|b| b.to_bytes())
+            .unwrap_or_default();
+        if !status.is_success() {
+            // The body says why (field errors), keep it in the log.
+            let why = String::from_utf8_lossy(&bytes[..bytes.len().min(300)]).into_owned();
+            let err = CoreError::Library(format!("{endpoint}: {status}: {why}"));
+            log::error!("{err}");
+            span.fail(&err);
+            return Err(err);
+        }
+        span.ok(bytes.len(), 0);
+        Ok(bytes)
+    }
+
+    /// Cache first; the rest via batched extended-metadata requests, then one by one for
+    /// whatever a batch did not return.
+    async fn resolve_uris(&self, uris: Vec<SpotifyUri>) -> Vec<Track> {
+        let started = Instant::now();
+        let keys: Vec<Option<String>> = uris.iter().map(|u| u.to_uri().ok()).collect();
+        let missing: Vec<SpotifyUri> = {
+            let cache = self.cache.lock().unwrap();
+            uris.iter()
+                .zip(&keys)
+                .filter(|(u, k)| {
+                    matches!(u, SpotifyUri::Track { .. })
+                        && k.as_ref().is_some_and(|k| !cache.tracks.contains_key(k))
+                })
+                .map(|(u, _)| u.clone())
+                .collect()
+        };
+        let cached = uris.len() - missing.len();
+
+        let chunks: Vec<Vec<SpotifyUri>> =
+            missing.chunks(METADATA_BATCH).map(<[_]>::to_vec).collect();
+        let batches: Vec<HashMap<String, Track>> = stream::iter(chunks)
+            .map(|chunk| {
+                let session = self.session.clone();
+                async move { fetch_track_batch(&session, &chunk).await }
+            })
+            .buffer_unordered(METADATA_BATCH_CONCURRENCY)
+            .collect()
+            .await;
+        let mut fetched: HashMap<String, Track> = batches.into_iter().flatten().collect();
+
+        // Not in a batch answer: single requests with retries.
+        let rest: Vec<SpotifyUri> = missing
+            .iter()
+            .filter(|u| u.to_uri().is_ok_and(|k| !fetched.contains_key(&k)))
+            .cloned()
+            .collect();
+        let singles: Vec<Track> = stream::iter(rest)
+            .map(|uri| {
+                let session = self.session.clone();
+                async move { resolve_track(&session, uri).await }
+            })
+            .buffer_unordered(CONCURRENCY)
+            .filter_map(|t| async move { t })
+            .collect()
+            .await;
+        fetched.extend(singles.into_iter().map(|t| (t.uri.clone(), t)));
+
+        let mut cache = self.cache.lock().unwrap();
+        for (k, t) in &fetched {
+            cache.tracks.insert(k.clone(), t.clone());
+        }
+        let out: Vec<Track> = keys
+            .iter()
+            .flatten()
+            .filter_map(|k| cache.tracks.get(k).cloned())
+            .collect();
+        telemetry::emit(telemetry::Record::Resolve {
+            requested: uris.len(),
+            cached,
+            fetched: fetched.len(),
+            failed: missing.len().saturating_sub(fetched.len()),
+            ms: started.elapsed().as_millis() as u64,
+        });
+        out
     }
 }
 
@@ -434,7 +535,10 @@ fn cover_url(images: &Images) -> Option<String> {
 }
 
 async fn resolve_album(session: &Session, uri: SpotifyUri) -> Option<Album> {
-    match LsAlbum::get(session, &uri).await {
+    let span = crate::telemetry::span("metadata/album");
+    match span.result(LsAlbum::get(session, &uri).await, |a| {
+        (0, a.tracks().count())
+    }) {
         Ok(a) => Some(Album {
             id: uri.to_id().ok()?,
             uri: uri.to_uri().ok()?,
@@ -449,35 +553,60 @@ async fn resolve_album(session: &Session, uri: SpotifyUri) -> Option<Album> {
     }
 }
 
-/// None for episodes, local files and unavailable items.
-pub(crate) async fn resolve_track(session: &Session, uri: SpotifyUri) -> Option<Track> {
-    if !matches!(uri, SpotifyUri::Track { .. }) {
-        return None;
-    }
-    // Large libraries hit rate limits: retry with backoff instead of dropping the track.
-    let mut attempt = 0;
-    let t = loop {
-        match LsTrack::get(session, &uri).await {
-            Ok(t) => break t,
-            Err(e)
-                if attempt < METADATA_RETRIES
-                    && !matches!(
-                        e.kind,
-                        ErrorKind::NotFound
-                            | ErrorKind::InvalidArgument
-                            | ErrorKind::PermissionDenied
-                    ) =>
-            {
-                attempt += 1;
-                log::debug!("track metadata failed for {uri:?} (retry {attempt}): {e}");
-                tokio::time::sleep(Duration::from_millis(500 * (1 << attempt))).await;
-            }
-            Err(e) => {
-                log::warn!("track metadata failed for {uri:?}: {e}");
-                return None;
-            }
+/// Track metadata for up to `METADATA_BATCH` URIs in one extended-metadata request.
+/// Missing or broken entries are left out (the caller falls back to single requests).
+async fn fetch_track_batch(session: &Session, uris: &[SpotifyUri]) -> HashMap<String, Track> {
+    let req = BatchedEntityRequest {
+        entity_request: uris
+            .iter()
+            .filter_map(|u| u.to_uri().ok())
+            .map(|entity_uri| EntityRequest {
+                entity_uri,
+                query: vec![ExtensionQuery {
+                    extension_kind: EnumOrUnknown::new(ExtensionKind::TRACK_V4),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let span = telemetry::span("extended-metadata batch");
+    let res = match session.spclient().get_extended_metadata(req).await {
+        Ok(res) => res,
+        Err(e) => {
+            log::warn!("metadata batch of {} failed: {e}", uris.len());
+            span.fail(&e);
+            return HashMap::new();
         }
     };
+    let mut out = HashMap::new();
+    let mut bytes = 0;
+    for data in res.extended_metadata.iter().flat_map(|a| &a.extension_data) {
+        let Some(any) = data.extension_data.as_ref() else {
+            continue;
+        };
+        bytes += any.value.len();
+        let Ok(uri) = SpotifyUri::from_uri(&data.entity_uri) else {
+            continue;
+        };
+        let parsed = TrackProto::parse_from_bytes(&any.value)
+            .map_err(librespot::core::Error::from)
+            .and_then(|msg| LsTrack::parse(&msg, &uri));
+        match parsed {
+            Ok(t) => {
+                if let Some(track) = to_track(&uri, t) {
+                    out.insert(track.uri.clone(), track);
+                }
+            }
+            Err(e) => log::debug!("metadata batch entry {} unreadable: {e}", data.entity_uri),
+        }
+    }
+    span.ok(bytes, out.len());
+    out
+}
+
+fn to_track(uri: &SpotifyUri, t: LsTrack) -> Option<Track> {
     Some(Track {
         id: uri.to_id().ok(),
         uri: uri.to_uri().ok()?,
@@ -487,4 +616,42 @@ pub(crate) async fn resolve_track(session: &Session, uri: SpotifyUri) -> Option<
         duration_ms: t.duration.max(0) as u32,
         cover_url: cover_url(&t.album.covers),
     })
+}
+
+/// None for episodes, local files and unavailable items.
+pub(crate) async fn resolve_track(session: &Session, uri: SpotifyUri) -> Option<Track> {
+    if !matches!(uri, SpotifyUri::Track { .. }) {
+        return None;
+    }
+    // Large libraries hit rate limits: retry with backoff instead of dropping the track.
+    let mut attempt = 0;
+    let t = loop {
+        let span = telemetry::span("metadata/track");
+        match LsTrack::get(session, &uri).await {
+            Ok(t) => {
+                span.ok(0, 1);
+                break t;
+            }
+            Err(e)
+                if attempt < METADATA_RETRIES
+                    && !matches!(
+                        e.kind,
+                        ErrorKind::NotFound
+                            | ErrorKind::InvalidArgument
+                            | ErrorKind::PermissionDenied
+                    ) =>
+            {
+                span.fail(&e);
+                attempt += 1;
+                log::debug!("track metadata failed for {uri:?} (retry {attempt}): {e}");
+                tokio::time::sleep(Duration::from_millis(500 * (1 << attempt))).await;
+            }
+            Err(e) => {
+                span.fail(&e);
+                log::warn!("track metadata failed for {uri:?}: {e}");
+                return None;
+            }
+        }
+    };
+    to_track(&uri, t)
 }

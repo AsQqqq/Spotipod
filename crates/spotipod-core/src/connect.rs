@@ -220,10 +220,15 @@ impl Connect {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         let body = body.to_string();
-        self.session
-            .spclient()
-            .request(&method, endpoint, Some(headers), Some(body.as_bytes()))
-            .await?;
+        // Endpoint without the device ids, so the debug view can group them.
+        let name = endpoint.split("/from/").next().unwrap_or(endpoint);
+        crate::telemetry::span(name.trim_start_matches('/')).result(
+            self.session
+                .spclient()
+                .request(&method, endpoint, Some(headers), Some(body.as_bytes()))
+                .await,
+            |b| (b.len(), 0),
+        )?;
         Ok(())
     }
 }
@@ -280,13 +285,14 @@ fn player_state(
         .filter(|t| !uri.is_empty() && t.uri == uri)
         .cloned();
     let resolve = (known.is_none() && !uri.is_empty()).then(|| uri.clone());
-    
+
     let track = known.or_else(|| {
         (!uri.is_empty()).then(|| {
             let meta = &ps.track.metadata;
-            
+
             // Ищем название по всем возможным ключам от Spotify Connect
-            let name = meta.get("title")
+            let name = meta
+                .get("title")
                 .or_else(|| meta.get("name"))
                 .or_else(|| meta.get("track_name"))
                 .or_else(|| meta.get("item_title"))
@@ -294,13 +300,15 @@ fn player_state(
                 .filter(|s| !s.is_empty() && !s.starts_with("spotify:"))
                 .unwrap_or_else(|| "Loading...".to_string()); // Чистый статус загрузки вместо ID
 
-            let artist = meta.get("artist_name")
+            let artist = meta
+                .get("artist_name")
                 .or_else(|| meta.get("artist"))
                 .or_else(|| meta.get("artists"))
                 .cloned()
                 .unwrap_or_else(|| "Spotify".to_string());
 
-            let album = meta.get("album_title")
+            let album = meta
+                .get("album_title")
                 .or_else(|| meta.get("album"))
                 .or_else(|| meta.get("album_name"))
                 .cloned()
@@ -379,7 +387,7 @@ async fn fill_track(
         log::warn!("fill_track: bad uri {uri}");
         return;
     };
-    
+
     // Пытаемся получить трек, если падает — логируем причину
     let track = match resolve_track(&session, parsed).await {
         Some(t) => t,

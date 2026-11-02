@@ -76,7 +76,12 @@ fn set_dock_icon() {
 }
 
 fn main() -> wry::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // Logs go to stderr and to the spotipod-debug feed.
+    let logger =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build();
+    log::set_max_level(logger.filter());
+    log::set_boxed_logger(Box::new(spotipod_core::telemetry::TeeLogger(logger)))
+        .expect("logger");
     let initial_scale = saved_ui_scale();
 
     let event_loop = EventLoopBuilder::<String>::with_user_event().build();
