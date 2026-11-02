@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 //! SpotiPod window: the iPod Classic page (ui/ipod.html) in a webview, driven by the backend.
 
 mod backend;
@@ -52,11 +54,35 @@ fn saved_ui_scale() -> f64 {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(main_thread) = MainThreadMarker::new() else {
+        log::error!("could not set Dock icon outside the main thread");
+        return;
+    };
+    let data = NSData::with_bytes(include_bytes!("../../../assets/icon/mac-1024.png"));
+    let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
+        log::error!("could not load the SpotiPod Dock icon");
+        return;
+    };
+
+    unsafe {
+        NSApplication::sharedApplication(main_thread).setApplicationIconImage(Some(&image));
+    }
+}
+
 fn main() -> wry::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let initial_scale = saved_ui_scale();
 
     let event_loop = EventLoopBuilder::<String>::with_user_event().build();
+    #[cfg(target_os = "macos")]
+    set_dock_icon();
+
     let window = std::sync::Arc::new(
         WindowBuilder::new()
             .with_title("SpotiPod")

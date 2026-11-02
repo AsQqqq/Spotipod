@@ -789,9 +789,9 @@ fn stage_update_in(directory: &Path, release: &UpdateRelease) -> Result<(), Stri
         .arg(&archive)
         .output()
         .map_err(|error| format!("could not inspect release archive: {error}"))?;
-    if !listing.status.success()
-        || String::from_utf8_lossy(&listing.stdout).trim() != "spotipod-gui"
-    {
+    let listing_succeeded = listing.status.success();
+    let listing = String::from_utf8_lossy(&listing.stdout);
+    if !listing_succeeded || !valid_app_archive_listing(&listing) {
         return Err("release archive does not contain the expected application binary".into());
     }
 
@@ -810,7 +810,7 @@ fn stage_update_in(directory: &Path, release: &UpdateRelease) -> Result<(), Stri
         ));
     }
 
-    let replacement = extracted.join("spotipod-gui");
+    let replacement = extracted.join("SpotiPod.app/Contents/MacOS/spotipod-gui");
     if !replacement.is_file() {
         return Err("downloaded application binary is missing".into());
     }
@@ -818,6 +818,20 @@ fn stage_update_in(directory: &Path, release: &UpdateRelease) -> Result<(), Stri
         .map_err(|error| format!("could not locate current application: {error}"))?;
     verify_install_location(&executable)?;
     launch_update_helper(directory, &executable, &replacement)
+}
+
+fn valid_app_archive_listing(listing: &str) -> bool {
+    let entries: Vec<_> = listing.lines().collect();
+    entries
+        .iter()
+        .any(|entry| *entry == "SpotiPod.app/Contents/MacOS/spotipod-gui")
+        && entries.iter().all(|entry| {
+            let entry = entry.trim_end_matches('/');
+            (entry == "SpotiPod.app" || entry.starts_with("SpotiPod.app/"))
+                && !entry
+                    .split('/')
+                    .any(|component| component.is_empty() || component == "." || component == "..")
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -904,7 +918,9 @@ mv -f "$temporary" "$target"
 
 #[cfg(test)]
 mod tests {
-    use super::{compare_versions, parse_release_response, preserve_output_order};
+    use super::{
+        compare_versions, parse_release_response, preserve_output_order, valid_app_archive_listing,
+    };
     use spotipod_core::OutputDevice;
 
     #[test]
@@ -997,6 +1013,17 @@ mod tests {
             }]
         });
         assert!(parse_release_response(release).is_err());
+    }
+
+    #[test]
+    fn updater_accepts_the_app_bundle_archive_and_rejects_unexpected_paths() {
+        assert!(valid_app_archive_listing(
+            "SpotiPod.app/\nSpotiPod.app/Contents/\nSpotiPod.app/Contents/MacOS/spotipod-gui\n"
+        ));
+        assert!(!valid_app_archive_listing(
+            "SpotiPod.app/Contents/MacOS/spotipod-gui\n../outside\n"
+        ));
+        assert!(!valid_app_archive_listing("spotipod-gui\n"));
     }
 }
 

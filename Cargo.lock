@@ -3769,7 +3769,7 @@ dependencies = [
 
 [[package]]
 name = "spotipod-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "directories",
@@ -3791,10 +3791,13 @@ dependencies = [
 
 [[package]]
 name = "spotipod-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "env_logger",
  "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "spotipod-core",
