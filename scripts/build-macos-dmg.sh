@@ -2,6 +2,7 @@
 # Builds target/SpotiPod-<version>.dmg with a drag-to-Applications window.
 #   sh scripts/build-macos-dmg.sh           reuse dist/SpotiPod.app if its version matches
 #   sh scripts/build-macos-dmg.sh --rebuild rebuild the app bundle first
+# SPOTIPOD_DMG_OUT overrides the output path (used by the release workflow).
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -26,7 +27,7 @@ fi
 WORK_DIR="$ROOT_DIR/target/dmg"
 VENV="$WORK_DIR/venv"
 STAGE="$WORK_DIR/stage"
-OUT="$ROOT_DIR/target/SpotiPod-$VERSION.dmg"
+OUT="${SPOTIPOD_DMG_OUT:-$ROOT_DIR/target/SpotiPod-$VERSION.dmg}"
 
 mkdir -p "$WORK_DIR"
 

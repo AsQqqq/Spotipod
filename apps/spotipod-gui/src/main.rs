@@ -3,6 +3,8 @@
 //! SpotiPod window: the iPod Classic page (ui/ipod.html) in a webview, driven by the backend.
 
 mod backend;
+#[cfg(target_os = "macos")]
+mod macos_menu;
 
 use std::time::Duration;
 
@@ -86,7 +88,10 @@ fn main() -> wry::Result<()> {
 
     let event_loop = EventLoopBuilder::<String>::with_user_event().build();
     #[cfg(target_os = "macos")]
-    set_dock_icon();
+    {
+        set_dock_icon();
+        macos_menu::install(event_loop.create_proxy());
+    }
 
     let window = std::sync::Arc::new(
         WindowBuilder::new()

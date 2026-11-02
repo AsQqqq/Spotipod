@@ -182,14 +182,25 @@ jobs:
             <string>${VERSION}</string>
             <key>LSApplicationCategoryType</key>
             <string>public.app-category.music</string>
+            <key>NSHumanReadableCopyright</key>
+            <string>Copyright © 2026 trade-cloud. PolyForm Noncommercial 1.0.0.</string>
             <key>NSHighResolutionCapable</key>
             <true/>
           </dict>
           </plist>
           PLIST
           plutil -lint "$app/Contents/Info.plist"
+          codesign --force --deep --sign - "$app"
           ditto -c -k --norsrc --keepParent "$app" \
             "dist/SpotiPod-${VERSION}-macOS-universal.zip"
+
+      - name: Build macOS DMG installer
+        if: matrix.platform == 'macos'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          SPOTIPOD_DMG_OUT="dist/SpotiPod-${VERSION}-macOS-universal.dmg" \
+            sh scripts/build-macos-dmg.sh
 
       - name: Package Windows binary
         if: matrix.platform == 'windows'
@@ -216,7 +227,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: SpotiPod-${{ needs.prepare.outputs.version }}-${{ matrix.platform }}
-          path: dist/SpotiPod-${{ needs.prepare.outputs.version }}-${{ matrix.asset_suffix }}
+          path: dist/SpotiPod-${{ needs.prepare.outputs.version }}-*
           if-no-files-found: error
 
   draft-release:

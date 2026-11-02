@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/spotipod-core", "apps/spotipod-gui", "apps/spotipod-debug"]
 
 [workspace.package]
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/AsQqqq/SpotiPOD"

@@ -60,6 +60,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <string>${VERSION}</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.music</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>Copyright © 2026 trade-cloud. PolyForm Noncommercial 1.0.0.</string>
   <key>NSHighResolutionCapable</key>
   <true/>
 </dict>
