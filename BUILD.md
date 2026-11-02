@@ -93,7 +93,7 @@ On macOS, run this from the repository root:
 make app
 ```
 
-This creates `dist/SpotiPod.app`, a self-contained macOS app bundle with the icon from `assets/icon`. Open it from Finder or drag it to Applications or the Dock; macOS launches the app directly without opening Terminal. The bundle version is read from the workspace package version in `Cargo.toml` (currently `0.1.1`). The app is unsigned and not notarized.
+This creates `dist/SpotiPod.app`, a self-contained macOS app bundle with the icon from `assets/icon`. Open it from Finder or drag it to Applications or the Dock; macOS launches the app directly without opening Terminal. The bundle version is read from the workspace package version in `Cargo.toml` (currently `0.1.2`). The app is unsigned and not notarized.
 
 ## GitHub Actions draft releases
 
