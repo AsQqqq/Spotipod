@@ -958,6 +958,26 @@ function clickerVolume() { return Math.max(0, Math.min(100, S.settings.clicker_v
 
 function rows(items) { return { count: items.length, item: i => items[i] }; }
 
+// Splits long info text into screen-wide rows instead of truncating it.
+function wrapInfo(text, width = 24, maxLines = 3) {
+    const lines = [];
+    let line = '';
+    for (const word of String(text).split(/\s+/).filter(Boolean)) {
+        if (line && (line + ' ' + word).length > width) {
+            lines.push(line);
+            line = word;
+        } else {
+            line = line ? line + ' ' + word : word;
+        }
+    }
+    if (line) lines.push(line);
+    if (lines.length > maxLines) {
+        lines.length = maxLines;
+        lines[maxLines - 1] = lines[maxLines - 1].replace(/.?$/, '…');
+    }
+    return lines;
+}
+
 function resetBrickGame() {
     brickGame.state = 'ready';
     brickGame.paddleX = brickCanvas.width / 2;
@@ -1271,7 +1291,7 @@ function menu(id) {
         return { title: 'Software Update', ...rows([
             { label: 'Current', value: `v${S.update.current_version}`, info: true },
             ...(S.update.available ? [{ label: 'Available', value: `v${S.update.version}`, info: true }] : []),
-            { label: status, info: true },
+            ...wrapInfo(status).map(label => ({ label, info: true })),
             ...(S.update.available && S.update.status !== 'installing'
                 ? [{ label: 'Install Update', act: () => send({ cmd: 'install_update', version: S.update.version }) }]
                 : []),

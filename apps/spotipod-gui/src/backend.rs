@@ -10,7 +10,7 @@ use std::{
 #[cfg(target_os = "macos")]
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -27,6 +27,9 @@ const BATCH: usize = 200;
 /// Lists fetched in parallel by the background warm-up.
 const WARM_CONCURRENCY: usize = 4;
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Background update re-check while the app stays open; the first check runs on `Ready`.
+#[cfg(target_os = "macos")]
+const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 const RELEASE_API: &str = "https://api.github.com/repos/AsQqqq/Spotipod/releases/latest";
 const RELEASE_ASSET_PREFIX: &str = "https://github.com/AsQqqq/Spotipod/releases/download/";
 
@@ -227,6 +230,8 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Cmd>, sink: Sink) {
         data: Mutex::default(),
         sink,
     });
+    #[cfg(target_os = "macos")]
+    tokio::spawn(update_timer(ctx.clone()));
     let mut sp = match Spotipod::from_default_paths() {
         Ok(sp) => sp,
         Err(e) => {
@@ -573,6 +578,16 @@ async fn handle(ctx: &Arc<Ctx>, sp: &mut Spotipod, cmd: Cmd) {
     }
 }
 
+#[cfg(target_os = "macos")]
+async fn update_timer(ctx: Arc<Ctx>) {
+    let start = tokio::time::Instant::now() + UPDATE_CHECK_EVERY;
+    let mut ticks = tokio::time::interval_at(start, UPDATE_CHECK_EVERY);
+    loop {
+        ticks.tick().await;
+        check_for_updates(ctx.clone());
+    }
+}
+
 #[derive(Clone, Debug)]
 struct UpdateRelease {
     version: String,
@@ -888,14 +903,18 @@ fn stage_update_in(directory: &Path, release: &UpdateRelease) -> Result<(), Stri
         ));
     }
 
-    let replacement = extracted.join("SpotiPod.app/Contents/MacOS/spotipod-gui");
-    if !replacement.is_file() {
-        return Err("downloaded application binary is missing".into());
+    let replacement = extracted.join("SpotiPod.app");
+    if !replacement.join("Contents/MacOS/spotipod-gui").is_file()
+        || !replacement.join("Contents/Info.plist").is_file()
+    {
+        return Err("Downloaded app is incomplete.".into());
     }
     let executable = std::env::current_exe()
         .map_err(|error| format!("could not locate current application: {error}"))?;
-    verify_install_location(&executable)?;
-    launch_update_helper(directory, &executable, &replacement)
+    let bundle = current_bundle(&executable)?;
+    let folder = bundle.parent().ok_or("App has no parent folder.")?;
+    let as_admin = needs_admin(folder)?;
+    launch_update_helper(directory, &bundle, &replacement, as_admin)
 }
 
 fn valid_app_archive_listing(listing: &str) -> bool {
@@ -912,26 +931,51 @@ fn valid_app_archive_listing(listing: &str) -> bool {
         })
 }
 
+/// The running SpotiPod.app; the whole bundle is replaced on update.
 #[cfg(target_os = "macos")]
-fn verify_install_location(executable: &Path) -> Result<(), String> {
-    let parent = executable
-        .parent()
-        .ok_or("current application has no parent directory")?;
-    let probe = parent.join(format!(
+fn current_bundle(executable: &Path) -> Result<PathBuf, String> {
+    let bundle = executable
+        .ancestors()
+        .nth(3)
+        .filter(|path| path.extension().is_some_and(|ext| ext == "app"))
+        .ok_or("Updates need SpotiPod.app.")?;
+    // A quarantined app opened in place runs from a read-only random path.
+    if bundle
+        .components()
+        .any(|component| component.as_os_str() == "AppTranslocation")
+    {
+        return Err("Move SpotiPod to Applications, then reopen it.".into());
+    }
+    Ok(bundle.to_path_buf())
+}
+
+/// Whether swapping the bundle in `folder` needs an admin password.
+#[cfg(target_os = "macos")]
+fn needs_admin(folder: &Path) -> Result<bool, String> {
+    let probe = folder.join(format!(
         ".spotipod-update-write-check-{}",
         std::process::id()
     ));
-    fs::OpenOptions::new()
+    match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&probe)
-        .map_err(|error| {
-            format!(
-                "application directory {} is not writable: {error}",
-                parent.display()
-            )
-        })?;
-    fs::remove_file(probe).map_err(|error| format!("could not remove update check file: {error}"))
+    {
+        Ok(_) => {
+            if let Err(error) = fs::remove_file(&probe) {
+                log::warn!("could not remove update check file: {error}");
+            }
+            Ok(false)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::ReadOnlyFilesystem => {
+            Err("Move SpotiPod to Applications, then reopen it.".into())
+        }
+        Err(error) => {
+            log::warn!("update folder {} is not usable: {error}", folder.display());
+            Err(format!("Can't write to {}.", folder.display()))
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -964,28 +1008,63 @@ fn verify_sha256(archive: &Path, expected: &str) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 fn launch_update_helper(
     directory: &Path,
-    executable: &Path,
+    bundle: &Path,
     replacement: &Path,
+    as_admin: bool,
 ) -> Result<(), String> {
-    let helper = directory.join("install-update.sh");
-    let script = r#"#!/bin/sh
+    // Swaps the bundle; restores the old one if the final move fails.
+    let swap_script = r#"#!/bin/sh
 set -eu
-pid="$1"
+source="$1"
 target="$2"
-replacement="$3"
-temporary="${target}.spotipod-update.$$"
-while kill -0 "$pid" 2>/dev/null; do sleep 1; done
-cp "$replacement" "$temporary"
-chmod 755 "$temporary"
-mv -f "$temporary" "$target"
-"$target" >/dev/null 2>&1 &
+owner="${3:-}"
+staged="${target}.spotipod-new"
+backup="${target}.spotipod-old"
+rm -rf "$staged" "$backup"
+/usr/bin/ditto "$source" "$staged"
+if [ -n "$owner" ]; then /usr/sbin/chown -R "$owner" "$staged"; fi
+/usr/bin/xattr -dr com.apple.quarantine "$staged" 2>/dev/null || true
+mv "$target" "$backup"
+if ! mv "$staged" "$target"; then
+    mv "$backup" "$target"
+    exit 1
+fi
+rm -rf "$backup" || true
 "#;
-    fs::write(&helper, script).map_err(|error| format!("could not prepare installer: {error}"))?;
+    // Waits for SpotiPod to quit, swaps (as admin if needed), relaunches, cleans up.
+    let helper_script = r#"#!/bin/sh
+pid="$1"
+swap="$2"
+source="$3"
+target="$4"
+mode="$5"
+workdir="$6"
+while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+if [ "$mode" = admin ]; then
+    /usr/bin/osascript \
+        -e 'on run argv' \
+        -e 'do shell script "/bin/sh " & quoted form of item 1 of argv & " " & quoted form of item 2 of argv & " " & quoted form of item 3 of argv & " " & quoted form of item 4 of argv with prompt "SpotiPod wants to install an update." with administrator privileges' \
+        -e 'end run' \
+        "$swap" "$source" "$target" "$(id -un)"
+else
+    /bin/sh "$swap" "$source" "$target"
+fi
+/usr/bin/open "$target"
+rm -rf "$workdir"
+"#;
+    let swap = directory.join("swap-app.sh");
+    let helper = directory.join("install-update.sh");
+    fs::write(&swap, swap_script).map_err(|error| format!("could not prepare installer: {error}"))?;
+    fs::write(&helper, helper_script)
+        .map_err(|error| format!("could not prepare installer: {error}"))?;
     Command::new("/bin/sh")
         .arg(&helper)
         .arg(std::process::id().to_string())
-        .arg(executable)
+        .arg(&swap)
         .arg(replacement)
+        .arg(bundle)
+        .arg(if as_admin { "admin" } else { "user" })
+        .arg(directory)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
