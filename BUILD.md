@@ -86,6 +86,15 @@ The workspace defines a release profile with thin link-time optimization, a sing
 
 This command builds the Rust executable. The macOS GitHub release workflow wraps its universal binary in `SpotiPod.app`, adds the app icon and metadata, and publishes a zip of that bundle. The app can be moved to Applications and launched from Finder or the Dock without opening Terminal. Release builds are not signed or notarized.
 
+### Build a macOS app with one command
+
+On macOS, run this from the repository root:
+```bash
+make app
+```
+
+This creates `dist/SpotiPod.app`, a self-contained macOS app bundle with the icon from `assets/icon`. Open it from Finder or drag it to Applications or the Dock; macOS launches the app directly without opening Terminal. The bundle version is read from the workspace package version in `Cargo.toml` (currently `0.1.1`). The app is unsigned and not notarized.
+
 ## GitHub Actions draft releases
 
 The `.github/workflows/release.yml` workflow runs only when a commit is pushed to `main`. It reads the release version from `[workspace.package].version` in the root `Cargo.toml`, and reads the enabled build platforms from `release.toml`:

@@ -37,9 +37,21 @@ jobs:
               platforms = tomllib.load(file)["platforms"]
 
           runners = {
-              "macos": {"os": "macos-14", "target": "x86_64-apple-darwin,aarch64-apple-darwin"},
-              "windows": {"os": "windows-latest", "target": "x86_64-pc-windows-msvc"},
-              "linux": {"os": "ubuntu-22.04", "target": "x86_64-unknown-linux-gnu"},
+              "macos": {
+                  "os": "macos-14",
+                  "target": "x86_64-apple-darwin,aarch64-apple-darwin",
+                  "asset_suffix": "macOS-universal.zip",
+              },
+              "windows": {
+                  "os": "windows-latest",
+                  "target": "x86_64-pc-windows-msvc",
+                  "asset_suffix": "windows-x64.zip",
+              },
+              "linux": {
+                  "os": "ubuntu-22.04",
+                  "target": "x86_64-unknown-linux-gnu",
+                  "asset_suffix": "linux-x64.tar.gz",
+              },
           }
           matrix = [
               {"platform": platform, **runner}
@@ -160,6 +172,8 @@ jobs:
             <string>org.spotipod.Spotipod</string>
             <key>CFBundleName</key>
             <string>SpotiPod</string>
+            <key>CFBundleDisplayName</key>
+            <string>SpotiPod</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleShortVersionString</key>
@@ -201,8 +215,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: release-assets-${{ matrix.platform }}
-          path: dist/SpotiPod-*
+          name: SpotiPod-${{ needs.prepare.outputs.version }}-${{ matrix.platform }}
+          path: dist/SpotiPod-${{ needs.prepare.outputs.version }}-${{ matrix.asset_suffix }}
           if-no-files-found: error
 
   draft-release:
