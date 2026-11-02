@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 //! SpotiPod window: the iPod Classic page (ui/ipod.html) in a webview, driven by the backend.
 
 mod backend;
