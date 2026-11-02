@@ -16,6 +16,7 @@ pub mod output;
 mod playback;
 mod proto;
 pub mod settings;
+pub mod telemetry;
 
 use librespot::core::authentication::Credentials;
 use tokio::sync::broadcast;

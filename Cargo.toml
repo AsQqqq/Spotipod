@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/spotipod-core", "apps/spotipod-gui"]
+members = ["crates/spotipod-core", "apps/spotipod-gui", "apps/spotipod-debug"]
 
 [workspace.package]
 version = "0.1.2"
@@ -11,7 +11,7 @@ repository = "https://github.com/AsQqqq/SpotiPOD"
 [workspace.dependencies]
 spotipod-core = { path = "crates/spotipod-core" }
 librespot = { version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-std", "io-util", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-std", "io-util", "signal", "net"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 thiserror = "2"

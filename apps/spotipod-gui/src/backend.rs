@@ -2,9 +2,9 @@
 //! receives JSON messages: `state`, `library` and `list`.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[cfg(target_os = "macos")]
@@ -18,12 +18,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use spotipod_core::{
     About, Album, Event, Library, OutputDevice, PlaybackState, Playlist, Settings, Spotipod,
-    Status, Track,
+    Status, Track, telemetry,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 
 /// Tracks resolved per batch; the page asks for the next one while scrolling.
 const BATCH: usize = 200;
+/// Lists fetched in parallel by the background warm-up.
+const WARM_CONCURRENCY: usize = 4;
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_API: &str = "https://api.github.com/repos/AsQqqq/Spotipod/releases/latest";
 const RELEASE_ASSET_PREFIX: &str = "https://github.com/AsQqqq/Spotipod/releases/download/";
@@ -119,6 +121,10 @@ struct Data {
     liked: Option<String>,
     /// Track lists by context URI.
     lists: HashMap<String, TrackList>,
+    /// Lists being fetched (open or warm-up), so each is fetched once.
+    fetching: HashSet<String>,
+    /// Bumped on logout; fetches of an older session are dropped.
+    epoch: u64,
     library: Option<Library>,
     update_version: Option<String>,
     update_url: Option<String>,
@@ -190,6 +196,7 @@ impl Ctx {
             f(&mut d);
             state_json(&d)
         };
+        telemetry::state(msg.clone());
         self.send(msg);
     }
 
@@ -215,6 +222,7 @@ impl Ctx {
 }
 
 async fn run(mut rx: mpsc::UnboundedReceiver<Cmd>, sink: Sink) {
+    tokio::spawn(telemetry::serve());
     let ctx = Arc::new(Ctx {
         data: Mutex::default(),
         sink,
@@ -240,7 +248,9 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Cmd>, sink: Sink) {
             d.phase = Phase::Authorizing;
             d.progress = "Connecting".into();
         });
+        let started = Instant::now();
         if ctx.report(sp.start().await).is_some() {
+            telemetry::load("boot", "connect", 0, started);
             on_ready(&ctx, &mut sp).await;
         } else {
             need_login(&ctx);
@@ -308,6 +318,7 @@ async fn on_ready(ctx: &Arc<Ctx>, sp: &mut Spotipod) {
         d.playback = state;
         d.phase = Phase::Ready;
     });
+    tokio::spawn(warm_up(ctx.clone()));
 }
 
 /// Back to the login item, showing why (the last status, e.g. an error).
@@ -336,9 +347,10 @@ async fn fetch_list(
     })
 }
 
-/// Playlist / album lists, About, and the first batch of Liked Songs and of every playlist
-/// and album. Failures are reported and skipped.
+/// Only what the menus need: playlist and album lists and the liked count. Tracks load
+/// when a list opens, and in the background (`warm_up`). Failures are reported and skipped.
 async fn preload(ctx: &Ctx, sp: &Spotipod, library: &Library) {
+    let boot = Instant::now();
     // Full re-check launch: say so on the loading screen.
     let check = if library.is_refreshing() {
         "Checking "
@@ -346,18 +358,24 @@ async fn preload(ctx: &Ctx, sp: &Spotipod, library: &Library) {
         ""
     };
     ctx.progress(format!("{check}Playlists"));
+    let started = Instant::now();
     if let Some(list) = ctx.report(library.playlists().await) {
+        telemetry::load("boot", "playlists", list.len(), started);
         ctx.data.lock().unwrap().playlists = list;
     }
     ctx.progress(format!("{check}Albums"));
+    let started = Instant::now();
     if let Some(list) = ctx.report(library.saved_albums().await) {
+        telemetry::load("boot", "albums", list.len(), started);
         ctx.data.lock().unwrap().albums = list;
     }
 
     ctx.progress(format!("{check}Songs"));
     if let Some(liked) = ctx.report(sp.liked_songs_uri()) {
         ctx.data.lock().unwrap().liked = Some(liked.clone());
+        let started = Instant::now();
         if let Ok(count) = library.liked_count().await {
+            telemetry::load("boot", "liked count", count as usize, started);
             ctx.update(|d| {
                 d.about = Some(About {
                     songs: count,
@@ -368,25 +386,84 @@ async fn preload(ctx: &Ctx, sp: &Spotipod, library: &Library) {
             });
         }
     }
+    ctx.send_library();
+    save_library(library);
+    telemetry::load("boot", "menus ready", 0, boot);
+}
 
-    let lists: Vec<(String, String)> = {
+/// Fetches every list in the background, a few at a time, so most open instantly.
+async fn warm_up(ctx: Arc<Ctx>) {
+    let started = Instant::now();
+    let (lists, library) = {
         let d = ctx.data.lock().unwrap();
-        d.playlists
+        let lists: Vec<(String, String)> = d
+            .playlists
             .iter()
             .map(|p| (p.name.clone(), p.uri.clone()))
             .chain(d.albums.iter().map(|a| (a.name.clone(), a.uri.clone())))
-            .collect()
+            .chain(d.liked.iter().map(|l| ("Songs".to_owned(), l.clone())))
+            .collect();
+        (lists, d.library.clone())
     };
+    let Some(library) = library else { return };
     let total = lists.len();
-    for (i, (name, uri)) in lists.into_iter().enumerate() {
-        ctx.progress(format!("{check}Playlists {}/{total}", i + 1));
-        match fetch_list(library, name, &uri).await {
-            Ok(list) => _ = ctx.data.lock().unwrap().lists.insert(uri, list),
-            Err(e) => log::warn!("preload {uri} failed: {e}"),
-        }
+    let limit = Arc::new(Semaphore::new(WARM_CONCURRENCY));
+    let tasks: Vec<_> = lists
+        .into_iter()
+        .map(|(name, context)| {
+            let ctx = ctx.clone();
+            let limit = limit.clone();
+            tokio::spawn(async move {
+                let _permit = limit.acquire().await;
+                ensure_list(&ctx, name, context, "warm").await;
+            })
+        })
+        .collect();
+    for task in tasks {
+        _ = task.await;
     }
-    ctx.send_library();
-    save_library(library);
+    save_library(&library);
+    telemetry::load("warm", "all lists", total, started);
+}
+
+/// Fetches a list's URIs and first batch unless known or already being fetched, then
+/// sends it to the page.
+async fn ensure_list(ctx: &Ctx, name: String, context: String, source: &str) {
+    let (library, epoch) = {
+        let mut d = ctx.data.lock().unwrap();
+        if d.lists.contains_key(&context) || !d.fetching.insert(context.clone()) {
+            return;
+        }
+        let Some(library) = d.library.clone() else {
+            d.fetching.remove(&context);
+            return;
+        };
+        (library, d.epoch)
+    };
+    let started = Instant::now();
+    let result = fetch_list(&library, name.clone(), &context).await;
+    let msg = {
+        let mut d = ctx.data.lock().unwrap();
+        d.fetching.remove(&context);
+        if d.epoch != epoch {
+            return;
+        }
+        match result {
+            Ok(list) => {
+                telemetry::load(source, name, list.uris.len(), started);
+                let msg = list.message(&context, 0);
+                d.lists.insert(context, list);
+                Some(msg)
+            }
+            Err(e) => {
+                log::warn!("{source} {context} failed: {e}");
+                None
+            }
+        }
+    };
+    if let Some(msg) = msg {
+        ctx.send(msg);
+    }
 }
 
 /// Writes the library cache in the background.
@@ -440,6 +517,7 @@ async fn handle(ctx: &Arc<Ctx>, sp: &mut Spotipod, cmd: Cmd) {
             ctx.update(|d| {
                 *d = Data {
                     phase: Phase::NeedLogin,
+                    epoch: d.epoch + 1,
                     outputs: std::mem::take(&mut d.outputs),
                     settings: d.settings,
                     ui_scale: d.ui_scale,
@@ -1027,27 +1105,19 @@ mod tests {
     }
 }
 
-/// Sends a known list, or fetches its first batch (lists added after startup).
+/// Sends a known list, or fetches it now (the page shows "Loading..." meanwhile). A list
+/// the warm-up is fetching is sent when that fetch is done.
 fn open_list(ctx: &Arc<Ctx>, name: String, context: String) {
-    let library = {
+    let msg = {
         let d = ctx.data.lock().unwrap();
-        if let Some(list) = d.lists.get(&context) {
-            let msg = list.message(&context, 0);
-            drop(d);
-            ctx.send(msg);
-            return;
-        }
-        d.library.clone()
+        d.lists.get(&context).map(|l| l.message(&context, 0))
     };
-    let Some(library) = library else { return };
+    if let Some(msg) = msg {
+        ctx.send(msg);
+        return;
+    }
     let ctx = ctx.clone();
-    tokio::spawn(async move {
-        if let Some(list) = ctx.report(fetch_list(&library, name, &context).await) {
-            let msg = list.message(&context, 0);
-            ctx.data.lock().unwrap().lists.insert(context, list);
-            ctx.send(msg);
-        }
-    });
+    tokio::spawn(async move { ensure_list(&ctx, name, context, "open").await });
 }
 
 /// Resolves the next batch of a list and sends it.
@@ -1068,7 +1138,9 @@ fn load_more(ctx: &Arc<Ctx>, context: String) {
     };
     let ctx = ctx.clone();
     tokio::spawn(async move {
+        let started = Instant::now();
         let tracks = library.resolve(&batch).await;
+        telemetry::load("batch", context.clone(), tracks.len(), started);
         save_library(&library);
         let msg = {
             let mut d = ctx.data.lock().unwrap();

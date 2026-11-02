@@ -1,0 +1,16 @@
+[package]
+name = "spotipod-debug"
+description = "Debug window for SpotiPod: performance, network, loading, logs and state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "spotipod-debug"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+eframe = "0.37"
+sysinfo = "0.40"
