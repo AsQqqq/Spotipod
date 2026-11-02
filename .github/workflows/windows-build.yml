@@ -1,0 +1,28 @@
+name: Build Windows executable
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build SpotiPod
+        run: cargo build --locked --release -p spotipod-gui --target x86_64-pc-windows-msvc
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpotiPod-windows-x64
+          path: target/x86_64-pc-windows-msvc/release/spotipod-gui.exe
+          if-no-files-found: error
+          retention-days: 14

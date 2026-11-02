@@ -110,6 +110,10 @@ Set a platform to `true` to build it. macOS produces a universal Intel/Apple Sil
 
 After all selected platform builds succeed, the workflow creates a Git tag named exactly after the configured version and attaches the archives to a **draft** GitHub release. Review and publish that draft manually. The macOS archive contains an unsigned `.app` bundle; Windows and Linux archives contain unsigned executables. Windows and Linux builds are not yet verified by the project maintainer.
 
+### Test a Windows build
+
+The **Build Windows executable** workflow can be started manually from the GitHub Actions tab. It builds the x64 Windows GUI executable with the icon from `assets/icon/windows.ico` and uploads it as the `SpotiPod-windows-x64` artifact. The executable uses the Windows GUI subsystem, so it does not open a terminal window. The workflow file must first be pushed to the default branch on GitHub; download the artifact from the completed workflow run.
+
 ### In-app updates
 
 On macOS, SpotiPod checks GitHub for the latest published stable release at startup. When it finds a newer version, an **Update** item appears at the top of the main menu. You can also check from **Settings → Check for Updates**. Choosing **Install Update** downloads the macOS universal archive, verifies its GitHub SHA-256 digest when available, and restarts SpotiPod with the new executable. The directory containing the running executable must be writable. Draft releases are not visible to the updater; publish the draft before users can receive it. In-app installation is currently macOS-only; Windows and Linux support is on the README roadmap.
