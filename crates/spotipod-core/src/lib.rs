@@ -113,6 +113,12 @@ impl Spotipod {
         self.start_with(credentials).await
     }
 
+    /// Connects with an access token obtained out-of-band (e.g. `auth::oauth_token`
+    /// run in a cancelable task). Lets the front end abort the browser flow.
+    pub async fn connect_with_token(&mut self, token: String) -> Result<()> {
+        self.start_with(Credentials::with_access_token(token)).await
+    }
+
     async fn start_with(&mut self, credentials: Credentials) -> Result<()> {
         self.stop().await;
         let engine =

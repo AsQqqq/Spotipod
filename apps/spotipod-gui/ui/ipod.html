@@ -471,7 +471,82 @@
             opacity: 0;
             transition: opacity 0.05s ease-in-out;
         }
-        
+
+        /* SOURCE: long "physical" button on the BOTTOM edge, mirroring the top
+           AUX / MINIMIZE / OFF bars but pointing down. */
+        .source-port {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            height: 0;
+            pointer-events: none;
+            z-index: 90;
+        }
+
+        .animation-button-source {
+            position: absolute;
+            bottom: -8px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 150px;
+            height: 5px;
+            background-color: #fff;
+            border: 0;
+            padding: 0;
+            pointer-events: auto;
+            cursor: pointer;
+            transition: all 0.1s ease-in-out;
+        }
+
+        .animation-button-source:hover {
+            height: 9px;
+            bottom: -12px;
+            background-color: #b3f4ff;
+        }
+
+        .animation-button-source:active {
+            height: 3px;
+            bottom: -6px;
+            background-color: #00bbff;
+            transition: all 0.05s ease-in-out;
+        }
+
+        .animation-button-source::after {
+            content: "SOURCE";
+            position: absolute;
+            top: 5px;
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            color: white;
+            font-size: 12px;
+            font-family: sans-serif;
+            pointer-events: none;
+            transition: all 0.2s ease-in-out;
+            white-space: nowrap;
+        }
+
+        .animation-button-source:hover::after {
+            opacity: 1;
+            top: 16px;
+        }
+
+        .animation-button-source:active::after {
+            opacity: 0;
+            transition: opacity 0.05s ease-in-out;
+        }
+
+        /* First-launch hint: gently pulse until the user has opened Sources once. */
+        .animation-button-source.hint {
+            animation: source-hint 1.4s ease-in-out infinite;
+        }
+
+        @keyframes source-hint {
+            0%, 100% { background-color: #fff; box-shadow: 0 0 0 0 rgba(47, 109, 240, 0); }
+            50%      { background-color: #9fc0ff; box-shadow: 0 0 10px 2px rgba(47, 109, 240, 0.65); }
+        }
+
         .animation-button-off:active {
             height: 3px;
             top: -20px;
@@ -495,10 +570,6 @@
             opacity: 0;
             transition: opacity 0.05s ease-in-out;
         }
-
-        /* body {
-            background-color: #000;
-        } */
 
         .button-system,
         .aux-port {
@@ -548,9 +619,9 @@
             transition: all 0.1s ease-in-out;
         }
 
-        body {
+        /* body {
             background-color: #000;
-        }
+        } */
 
         /* =======================================================================
            Appearance / customization (Settings > Appearance)
@@ -754,6 +825,10 @@
                                 <path d="M 6 12 A 16 16 0 0 0 20 26" fill="none" stroke="transparent" stroke-width="14" stroke-linecap="round" class="resize-hitbox"/>
                                 <path d="M 6 12 A 16 16 0 0 0 20 26" fill="none" stroke="rgba(255, 255, 255, 1)" stroke-width="3.5" stroke-linecap="round"/>
                             </svg>
+                        </div>
+
+                        <div class="source-port" id="source-port">
+                            <button class="animation-button-source" id="btn-source" title="Source"></button>
                         </div>
 
                         <div class="ipod-screen svelte-4kg78n" id="screen">
@@ -1369,9 +1444,26 @@ document.querySelector('.animation-button-aux').addEventListener('click', () => 
     if (view === 'now_playing') {
         view = 'menu';
     }
-    
+
     push('output');
 });
+
+// SOURCE button (bottom edge): opens the Sources menu, like AUX opens Output.
+const sourceButton = document.querySelector('.animation-button-source');
+// Pulse the SOURCE button while Spotify is not yet authorized, to draw the eye.
+function updateSourceHint() {
+    sourceButton?.classList.toggle('hint', S.phase !== 'ready');
+}
+sourceButton.addEventListener('click', () => {
+    if (cur() && cur().id === 'sources') {
+        return;
+    }
+    if (view === 'now_playing') {
+        view = 'menu';
+    }
+    push('sources');
+});
+updateSourceHint();
 
 document.querySelector('.ipod-container').addEventListener('mousedown', (e) => {
     if (e.target.closest('button') || e.target.closest('.click-wheel') || e.target.closest('.ipod-screen') || e.target.closest('.window-controls') || e.target.closest('#resize-handle')) {
@@ -1453,6 +1545,23 @@ function menu(id) {
         if (S.playback.track) items.push({ label: 'Now Playing', act: showNowPlaying });
         return { title: 'iPod', ...rows(items) };
     }
+    case 'sources':
+        return { title: 'Sources', ...rows([
+            S.phase === 'ready'
+                ? { label: 'Spotify', next: 'home' }
+                : { label: 'Spotify', act: () => send({ cmd: 'login' }) },
+            { label: 'Pixabay', next: 'pixabay' },
+            { label: 'Local Music', next: 'local' },
+            { label: 'Settings', next: 'settings' },
+        ]) };
+    case 'pixabay':
+        return { title: 'Pixabay', info: true, ...rows([
+            { label: 'Coming soon', info: true },
+        ]) };
+    case 'local':
+        return { title: 'Local Music', info: true, ...rows([
+            { label: 'Coming soon', info: true },
+        ]) };
     case 'playlists':
         return { title: 'Playlists', ...rows(S.playlists.map(p => ({ label: p.name, next: 'list:' + p.uri, open: [p.uri, p.name] }))) };
     case 'albums':
@@ -1783,14 +1892,24 @@ function showNowPlaying() {
 function render() {
     try {
         applyTheme();
+        updateSourceHint();
         const isReady = (S.phase === 'ready');
         const needsLogin = (S.phase === 'need_login');
-        $('boot').style.display = isReady ? 'none' : 'flex';
-        $('auth-error').style.display = needsLogin ? 'block' : 'none';
+        // The Sources menu is usable without Spotify, so show the screen for
+        // need_login too; the boot/connecting screen only covers the transient phases.
+        const showMenu = isReady || needsLogin;
+        $('boot').style.display = showMenu ? 'none' : 'flex';
+        const authError = $('auth-error');
+        if (S.phase === 'authorizing') {
+            authError.textContent = 'Log in in your browser — press Menu to cancel';
+            authError.style.display = 'block';
+        } else {
+            authError.style.display = 'none';
+        }
 
         const menuTitle = document.querySelector('.menu-title');
         if (menuTitle) {
-            menuTitle.style.display = isReady ? 'block' : 'none';
+            menuTitle.style.display = showMenu ? 'block' : 'none';
         }
         
         $('now-playing').style.display = 'none';
@@ -1805,7 +1924,7 @@ function render() {
         if (view === 'calendar') { renderCalendarView(); return; }
         if (view === 'alarm_ring') { renderAlarmRingView(); return; }
 
-        if (!isReady) {
+        if (!showMenu) {
             if (list) list.style.display = 'none';
             if (nowPlayingEl) nowPlayingEl.style.display = 'none';
             return;
@@ -2099,7 +2218,8 @@ function onPhase() {
     view = 'menu';
     alarmPausedBrick = false;
     if (S.phase === 'need_login') {
-        stack = [{ id: 'login', sel: 0, top: 0 }];
+        // Not authorized: land on the Sources menu instead of a login wall.
+        stack = [{ id: 'sources', sel: 0, top: 0 }];
         for (const k in lists) delete lists[k];
         playedFrom = null;
     }
@@ -2205,11 +2325,32 @@ function input(fn) {
     return e => { e.preventDefault(); wakeBacklight(); if (S.phase === 'ready' || S.phase === 'need_login') fn(e); };
 }
 
+// During the browser login, Menu / Back aborts it and returns to Sources.
+function maybeCancelLogin() {
+    if (S.phase === 'authorizing') {
+        send({ cmd: 'cancel_login' });
+        return true;
+    }
+    return false;
+}
+
 $('btn-select').addEventListener('click', input(() => { select(); }));
-$('btn-menu').addEventListener('click', input(() => { back(); }));
+$('btn-menu').addEventListener('click', e => {
+    e.preventDefault();
+    wakeBacklight();
+    if (maybeCancelLogin()) return;
+    if (S.phase === 'ready' || S.phase === 'need_login') back();
+});
 $('btn-playpause').addEventListener('click', input(() => send({ cmd: 'play_pause' })));
 $('btn-forward').addEventListener('click', input(() => send({ cmd: 'next' })));
 $('btn-back').addEventListener('click', input(() => send({ cmd: 'prev' })));
+// Keyboard escape works even while the login screen is up (input() gates it out).
+window.addEventListener('keydown', e => {
+    if (S.phase === 'authorizing' && (e.key === 'Escape' || e.key === 'Backspace')) {
+        e.preventDefault();
+        send({ cmd: 'cancel_login' });
+    }
+});
 
 // Click Wheel: drag around the ring.
 const ring = $('ring');

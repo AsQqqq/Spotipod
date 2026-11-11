@@ -59,9 +59,9 @@ pub fn cached_credentials(paths: &Paths) -> Option<Credentials> {
     open_cache(paths).ok()?.credentials()
 }
 
-/// Runs the browser OAuth flow. The returned token credentials are exchanged for
-/// reusable ones (and cached) on the first session connect.
-pub async fn login_oauth(open_browser: bool) -> Result<Credentials> {
+/// Runs the browser OAuth flow and returns the raw access token. Safe to run in a
+/// cancelable task: dropping the future tears the local redirect server down.
+pub async fn oauth_token(open_browser: bool) -> Result<String> {
     let client_id = SessionConfig::default().client_id;
     let mut builder = OAuthClientBuilder::new(&client_id, REDIRECT_URI, OAUTH_SCOPES.to_vec())
         .with_custom_message(SUCCESS_PAGE);
@@ -69,7 +69,13 @@ pub async fn login_oauth(open_browser: bool) -> Result<Credentials> {
         builder = builder.open_in_browser();
     }
     let token = builder.build()?.get_access_token_async().await?;
-    Ok(Credentials::with_access_token(token.access_token))
+    Ok(token.access_token)
+}
+
+/// Runs the browser OAuth flow. The returned token credentials are exchanged for
+/// reusable ones (and cached) on the first session connect.
+pub async fn login_oauth(open_browser: bool) -> Result<Credentials> {
+    Ok(Credentials::with_access_token(oauth_token(open_browser).await?))
 }
 
 /// Forgets cached credentials and the account's library cache.

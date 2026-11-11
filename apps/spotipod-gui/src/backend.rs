@@ -39,6 +39,8 @@ pub enum Cmd {
     /// Page loaded: resend everything.
     Ready,
     Login,
+    /// Abort an in-progress browser login and return to the Sources menu.
+    CancelLogin,
     Logout,
     /// Show a list (playlist / album / liked songs context URI).
     Open {
@@ -264,11 +266,60 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Cmd>, sink: Sink) {
         ctx.update(|d| d.phase = Phase::NeedLogin);
     }
 
+    // Browser login runs in a cancelable task so the UI stays responsive and the
+    // user can back out; the access token (or error) comes back on this channel.
+    let (login_tx, mut login_rx) = mpsc::unbounded_channel::<std::result::Result<String, String>>();
+    let mut login_task: Option<tokio::task::JoinHandle<()>> = None;
+
     loop {
         tokio::select! {
             cmd = rx.recv() => match cmd {
                 Some(Cmd::Quit) | None => break,
+                Some(Cmd::Login) => {
+                    if let Some(task) = login_task.take() {
+                        task.abort();
+                    }
+                    ctx.update(|d| {
+                        d.phase = Phase::Authorizing;
+                        d.progress = "Log in in your browser".into();
+                    });
+                    let tx = login_tx.clone();
+                    login_task = Some(tokio::spawn(async move {
+                        let result = spotipod_core::auth::oauth_token(true)
+                            .await
+                            .map_err(|e| e.to_string());
+                        let _ = tx.send(result);
+                    }));
+                }
+                Some(Cmd::CancelLogin) => {
+                    if let Some(task) = login_task.take() {
+                        task.abort();
+                    }
+                    need_login(&ctx);
+                }
                 Some(cmd) => handle(&ctx, &mut sp, cmd).await,
+            },
+            login = login_rx.recv() => {
+                login_task = None;
+                if let Some(result) = login {
+                    match result {
+                        Ok(token) => {
+                            ctx.update(|d| {
+                                d.phase = Phase::Preparing;
+                                d.progress = "Connecting".into();
+                            });
+                            if ctx.report(sp.connect_with_token(token).await).is_some() {
+                                on_ready(&ctx, &mut sp).await;
+                            } else {
+                                need_login(&ctx);
+                            }
+                        }
+                        Err(e) => {
+                            ctx.status(format!("error: {e}"));
+                            need_login(&ctx);
+                        }
+                    }
+                }
             },
             ev = events.recv() => {
                 match ev {
@@ -506,17 +557,8 @@ async fn handle(ctx: &Arc<Ctx>, sp: &mut Spotipod, cmd: Cmd) {
             ctx.send_library();
             check_for_updates(ctx.clone());
         }
-        Cmd::Login => {
-            ctx.update(|d| {
-                d.phase = Phase::Authorizing;
-                d.progress = "Log in in your browser".into();
-            });
-            if ctx.report(sp.login(true).await).is_some() {
-                on_ready(ctx, sp).await;
-            } else {
-                need_login(ctx);
-            }
-        }
+        // Login / CancelLogin are handled in the run loop (cancelable, non-blocking).
+        Cmd::Login | Cmd::CancelLogin => {}
         Cmd::Logout => {
             ctx.report(sp.logout().await);
             ctx.update(|d| {
