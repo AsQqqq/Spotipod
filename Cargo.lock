@@ -5741,7 +5741,7 @@ dependencies = [
 
 [[package]]
 name = "spotipod-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "bytes",
  "directories",
@@ -5764,7 +5764,7 @@ dependencies = [
 
 [[package]]
 name = "spotipod-debug"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "eframe",
  "serde_json",
@@ -5773,7 +5773,7 @@ dependencies = [
 
 [[package]]
 name = "spotipod-gui"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "env_logger",
  "log",
