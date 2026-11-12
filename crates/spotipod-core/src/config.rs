@@ -21,6 +21,12 @@ pub struct Config {
     pub settings: Settings,
     /// Scale of the GUI window and iPod interface (0.5-1.0).
     pub ui_scale: f64,
+    /// Folder scanned for Local Music; `None` falls back to the system Music folder.
+    pub local_music_dir: Option<String>,
+    /// Playback volume (0-100), shared across sources and restored on launch.
+    pub volume: u8,
+    /// Source the user was last in ("spotify" | "local"); restored on launch.
+    pub last_source: Option<String>,
 }
 
 impl Default for Config {
@@ -31,6 +37,9 @@ impl Default for Config {
             launch_spotify: true,
             settings: Settings::default(),
             ui_scale: 1.0,
+            local_music_dir: None,
+            volume: 70,
+            last_source: None,
         }
     }
 }

@@ -537,16 +537,6 @@
             transition: opacity 0.05s ease-in-out;
         }
 
-        /* First-launch hint: gently pulse until the user has opened Sources once. */
-        .animation-button-source.hint {
-            animation: source-hint 1.4s ease-in-out infinite;
-        }
-
-        @keyframes source-hint {
-            0%, 100% { background-color: #fff; box-shadow: 0 0 0 0 rgba(47, 109, 240, 0); }
-            50%      { background-color: #9fc0ff; box-shadow: 0 0 10px 2px rgba(47, 109, 240, 0.65); }
-        }
-
         .animation-button-off:active {
             height: 3px;
             top: -20px;
@@ -993,6 +983,10 @@ const S = {
     playlists: [],
     albums: [],
     liked: null,
+    localPlaylists: [],
+    localScanning: false,
+    source: null,
+    lastSource: null,
 };
 const lists = {};          // context -> { name, total, tracks, done, requested }
 let receivedAt = performance.now();
@@ -1450,10 +1444,6 @@ document.querySelector('.animation-button-aux').addEventListener('click', () => 
 
 // SOURCE button (bottom edge): opens the Sources menu, like AUX opens Output.
 const sourceButton = document.querySelector('.animation-button-source');
-// Pulse the SOURCE button while Spotify is not yet authorized, to draw the eye.
-function updateSourceHint() {
-    sourceButton?.classList.toggle('hint', S.phase !== 'ready');
-}
 sourceButton.addEventListener('click', () => {
     if (cur() && cur().id === 'sources') {
         return;
@@ -1463,7 +1453,6 @@ sourceButton.addEventListener('click', () => {
     }
     push('sources');
 });
-updateSourceHint();
 
 document.querySelector('.ipod-container').addEventListener('mousedown', (e) => {
     if (e.target.closest('button') || e.target.closest('.click-wheel') || e.target.closest('.ipod-screen') || e.target.closest('.window-controls') || e.target.closest('#resize-handle')) {
@@ -1532,13 +1521,18 @@ function menu(id) {
             ...(S.progress ? [{ label: S.progress, info: true }] : []),
         ]) };
     case 'home': {
-        const items = [
-            { label: 'Playlists', next: 'playlists' },
-            // { label: 'Albums', next: 'albums' },
-            { label: 'Songs', next: S.liked ? 'list:' + S.liked : null, open: S.liked ? [S.liked, 'Songs'] : null },
-            { label: 'Settings', next: 'settings' },
-            { label: 'Extras', next: 'extras' },
-        ];
+        // One home for every source: identical iPod look (same SpotiPod logo title,
+        // same items), only the contents differ by source.
+        const items = [];
+        if (S.source === 'local') {
+            items.push({ label: 'Playlists', next: 'local_playlists' });
+            items.push({ label: 'Songs', next: 'list:local:all', open: ['local:all', 'Songs'] });
+        } else {
+            items.push({ label: 'Playlists', next: 'playlists' });
+            items.push({ label: 'Songs', next: S.liked ? 'list:' + S.liked : null, open: S.liked ? [S.liked, 'Songs'] : null });
+        }
+        items.push({ label: 'Settings', next: 'settings' });
+        items.push({ label: 'Extras', next: 'extras' });
         if (S.update.available) {
             items.unshift({ label: `Update v${S.update.version}`, next: 'update' });
         }
@@ -1546,22 +1540,29 @@ function menu(id) {
         return { title: 'iPod', ...rows(items) };
     }
     case 'sources':
+        // Reachable only on first launch (nothing configured) or via the SOURCE
+        // button; picking a source resets into its home (see selectSource).
         return { title: 'Sources', ...rows([
-            S.phase === 'ready'
-                ? { label: 'Spotify', next: 'home' }
-                : { label: 'Spotify', act: () => send({ cmd: 'login' }) },
+            { label: 'Spotify', act: () => selectSource('spotify') },
             { label: 'Pixabay', next: 'pixabay' },
-            { label: 'Local Music', next: 'local' },
-            { label: 'Settings', next: 'settings' },
+            { label: 'Local Music', act: () => selectSource('local') },
         ]) };
     case 'pixabay':
         return { title: 'Pixabay', info: true, ...rows([
             { label: 'Coming soon', info: true },
         ]) };
-    case 'local':
-        return { title: 'Local Music', info: true, ...rows([
-            { label: 'Coming soon', info: true },
-        ]) };
+    case 'local_playlists': {
+        const pls = S.localPlaylists || [];
+        const items = [{ label: 'Choose Folder…', act: () => { S.localScanning = true; send({ cmd: 'local_pick_folder' }); } }];
+        if (pls.length) {
+            for (const p of pls) {
+                items.push({ label: p.name, value: String(p.count), next: 'list:local:pl:' + p.id, open: ['local:pl:' + p.id, p.name] });
+            }
+        } else {
+            items.push({ label: S.localScanning ? 'Scanning…' : 'No music found', info: true });
+        }
+        return { title: 'Playlists', ...rows(items) };
+    }
     case 'playlists':
         return { title: 'Playlists', ...rows(S.playlists.map(p => ({ label: p.name, next: 'list:' + p.uri, open: [p.uri, p.name] }))) };
     case 'albums':
@@ -1580,7 +1581,7 @@ function menu(id) {
                 push('update');
             } },
             { label: 'Reset All Settings', next: 'reset' },
-            { label: 'Log Out', next: 'logout' },
+            ...(S.source === 'spotify' ? [{ label: 'Log Out', next: 'logout' }] : []),
         ]) };
     case 'update': {
         const status = S.update.message
@@ -1729,15 +1730,34 @@ function push(id) {
     if (id === 'screen') sel = Math.max(0, SCREEN_LABELS.findIndex(([v]) => v === S.settings.screen));
     if (id === 'accent') sel = Math.max(0, ACCENT_LABELS.findIndex(([v]) => v === S.settings.accent));
     if (id === 'output') send({ cmd: 'refresh_outputs' });
+    if (id === 'local_playlists') { if (!S.localPlaylists.length) S.localScanning = true; send({ cmd: 'local_scan' }); }
     stack.push({ id, sel, top: 0 });
-    
+
     const screenBody = document.querySelector('.screen-body');
     if (screenBody) {
         screenBody.classList.remove('slide-right', 'slide-left');
         void screenBody.offsetWidth;
         screenBody.classList.add('slide-right');
     }
-    
+
+    render();
+}
+
+// Switch active source and reset the stack into its home, so the Sources menu is
+// left behind (it is only ever reached again via the SOURCE button / first launch).
+function selectSource(src) {
+    S.source = src;
+    S.lastSource = src;
+    send({ cmd: 'set_source', source: src });
+    if (src === 'local') {
+        if (!S.localPlaylists.length) S.localScanning = true;
+        send({ cmd: 'local_scan' });
+    } else if (src === 'spotify' && S.phase !== 'ready') {
+        send({ cmd: 'login' });
+    }
+    view = 'menu';
+    stack = [{ id: 'home', sel: 0, top: 0 }];
+    animateScreenTransition('left');
     render();
 }
 
@@ -1892,7 +1912,6 @@ function showNowPlaying() {
 function render() {
     try {
         applyTheme();
-        updateSourceHint();
         const isReady = (S.phase === 'ready');
         const needsLogin = (S.phase === 'need_login');
         // The Sources menu is usable without Spotify, so show the screen for
@@ -2181,6 +2200,7 @@ function receive(msg) {
             settings: msg.settings, about: msg.about, outputs: msg.outputs,
             update: msg.update ?? S.update,
         });
+        if (msg.last_source !== undefined) S.lastSource = msg.last_source;
         S.ui_scale = Math.max(UI_SCALE_MIN, Math.min(UI_SCALE_MAX, msg.ui_scale ?? 1));
         if (resizePointerId === null) {
             ipodElement.style.setProperty('--ui-scale', S.ui_scale.toFixed(3));
@@ -2210,6 +2230,10 @@ function receive(msg) {
         l.done = msg.done;
         l.requested = false;
         render();
+    } else if (msg.type === 'local_playlists') {
+        S.localPlaylists = msg.playlists || [];
+        S.localScanning = false;
+        render();
     }
 }
 
@@ -2218,12 +2242,25 @@ function onPhase() {
     view = 'menu';
     alarmPausedBrick = false;
     if (S.phase === 'need_login') {
-        // Not authorized: land on the Sources menu instead of a login wall.
-        stack = [{ id: 'sources', sel: 0, top: 0 }];
         for (const k in lists) delete lists[k];
         playedFrom = null;
     }
-    else if (S.phase === 'ready') stack = [{ id: 'home', sel: 0, top: 0 }];
+    if (S.phase !== 'need_login' && S.phase !== 'ready') return;
+
+    // Boot into the last-used source's home. Sources is shown only when nothing is
+    // configured yet (first launch), or when Spotify was last used but isn't available.
+    const src = S.lastSource || (S.phase === 'ready' ? 'spotify' : null);
+    if (src === 'local') {
+        S.source = 'local';
+        stack = [{ id: 'home', sel: 0, top: 0 }];
+        if (!S.localPlaylists.length) { S.localScanning = true; send({ cmd: 'local_scan' }); }
+    } else if (src === 'spotify' && S.phase === 'ready') {
+        S.source = 'spotify';
+        stack = [{ id: 'home', sel: 0, top: 0 }];
+    } else {
+        S.source = null;
+        stack = [{ id: 'sources', sel: 0, top: 0 }];
+    }
 }
 
 function showToast(text) {

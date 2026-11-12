@@ -11,6 +11,7 @@ mod connect;
 mod engine;
 pub mod error;
 pub mod library;
+pub mod local;
 pub mod model;
 pub mod output;
 mod playback;
@@ -18,12 +19,21 @@ mod proto;
 pub mod settings;
 pub mod telemetry;
 
+use std::{
+    path::PathBuf,
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
 use librespot::core::authentication::Credentials;
 use tokio::sync::broadcast;
 
 pub use config::{Config, Paths};
 pub use error::{CoreError, Result};
 pub use library::Library;
+pub use local::LocalPlayer;
 pub use model::*;
 pub use output::OutputDevice;
 pub use settings::{About, Backlight, Settings, Shuffle};
@@ -31,11 +41,18 @@ pub use settings::{About, Backlight, Settings, Shuffle};
 use engine::Engine;
 use playback::{PlayOptions, PlayRequest, Router};
 
+/// Volume step for `volume_up` / `volume_down` on the local player.
+const LOCAL_VOLUME_STEP: u8 = 5;
+
 pub struct Spotipod {
     config: Config,
     paths: Paths,
     events: broadcast::Sender<Event>,
     engine: Option<Engine>,
+    /// Local file player, created on first use (opens the audio device then).
+    local: OnceLock<LocalPlayer>,
+    /// True when Local Music is the active source; transport + state route to it.
+    local_active: AtomicBool,
 }
 
 impl Spotipod {
@@ -46,7 +63,71 @@ impl Spotipod {
             paths,
             events,
             engine: None,
+            local: OnceLock::new(),
+            local_active: AtomicBool::new(false),
         }
+    }
+
+    /// The local player, spawning its audio thread on first access.
+    fn local(&self) -> &LocalPlayer {
+        self.local.get_or_init(LocalPlayer::new)
+    }
+
+    /// Whether Local Music is the active source.
+    pub fn local_active(&self) -> bool {
+        self.local_active.load(Ordering::SeqCst)
+    }
+
+    /// Plays local tracks (makes Local the active source and pauses Spotify).
+    pub fn play_local(&self, tracks: Vec<Track>, index: u32) -> Result<()> {
+        if let Some(engine) = &self.engine {
+            engine.router.spawn(|r| async move { r.pause().await });
+        }
+        self.local_active.store(true, Ordering::SeqCst);
+        self.local().set_volume(self.config.volume);
+        self.local().play(tracks, index as usize);
+        Ok(())
+    }
+
+    /// Source the user was last in ("spotify" | "local"), restored on launch.
+    pub fn last_source(&self) -> Option<&str> {
+        self.config.last_source.as_deref()
+    }
+
+    /// Persists the last-used source (no-op write when unchanged).
+    pub fn set_last_source(&mut self, source: String) -> Result<()> {
+        if self.config.last_source.as_deref() != Some(source.as_str()) {
+            self.config.last_source = Some(source);
+            self.config.save(&self.paths)?;
+        }
+        Ok(())
+    }
+
+    /// Persists the current config (e.g. the shared volume) to disk.
+    pub fn save(&self) -> Result<()> {
+        self.config.save(&self.paths)
+    }
+
+    /// Leaves Local Music for the Spotify remote, stopping local audio.
+    fn switch_to_spotify(&self) {
+        if self.local_active.swap(false, Ordering::SeqCst) {
+            self.local().stop();
+        }
+    }
+
+    /// Folder scanned for Local Music (the configured one, else the system Music folder).
+    pub fn local_dir(&self) -> Option<PathBuf> {
+        self.config
+            .local_music_dir
+            .as_ref()
+            .map(PathBuf::from)
+            .or_else(local::default_dir)
+    }
+
+    /// Sets and persists the Local Music folder.
+    pub fn set_local_dir(&mut self, dir: String) -> Result<()> {
+        self.config.local_music_dir = Some(dir);
+        self.config.save(&self.paths)
     }
 
     /// Loads config from platform default paths.
@@ -71,6 +152,9 @@ impl Spotipod {
     /// Playback of the active device; when nothing plays, an idle state naming the
     /// device commands would go to.
     pub fn state(&self) -> PlaybackState {
+        if self.local_active() {
+            return self.local().state();
+        }
         let Some(engine) = &self.engine else {
             return PlaybackState::default();
         };
@@ -184,19 +268,25 @@ impl Spotipod {
 
     /// Plays a context (playlist / album / artist / collection), optionally from a given track.
     pub fn play_context(&self, context_uri: &str, start_track_uri: Option<&str>) -> Result<()> {
+        self.switch_to_spotify();
         let req = PlayRequest::Context {
             uri: context_uri.to_owned(),
             start: start_track_uri.map(str::to_owned),
         };
-        self.route(|r| async move { r.play(req).await })
+        self.route(|r| async move { r.play(req).await })?;
+        self.apply_volume();
+        Ok(())
     }
 
     pub fn play_tracks(&self, track_uris: Vec<String>, start_index: u32) -> Result<()> {
+        self.switch_to_spotify();
         let req = PlayRequest::Tracks {
             uris: track_uris,
             index: start_index,
         };
-        self.route(|r| async move { r.play(req).await })
+        self.route(|r| async move { r.play(req).await })?;
+        self.apply_volume();
+        Ok(())
     }
 
     /// Context URI of the user's Liked Songs.
@@ -208,47 +298,88 @@ impl Spotipod {
     }
 
     pub fn play(&self) -> Result<()> {
+        if self.local_active() {
+            self.local().resume();
+            return Ok(());
+        }
         self.route(|r| async move { r.resume().await })
     }
 
     pub fn pause(&self) -> Result<()> {
+        if self.local_active() {
+            self.local().pause();
+            return Ok(());
+        }
         self.route(|r| async move { r.pause().await })
     }
 
     pub fn play_pause(&self) -> Result<()> {
+        if self.local_active() {
+            self.local().play_pause();
+            return Ok(());
+        }
         self.route(|r| async move { r.play_pause().await })
     }
 
     pub fn next(&self) -> Result<()> {
+        if self.local_active() {
+            self.local().next();
+            return Ok(());
+        }
         self.route(|r| async move { r.next().await })
     }
 
     pub fn prev(&self) -> Result<()> {
+        if self.local_active() {
+            self.local().prev();
+            return Ok(());
+        }
         self.route(|r| async move { r.prev().await })
     }
 
     /// Shown immediately in `state()`; rapid calls (slider drag) collapse into the latest.
     pub fn seek(&self, position_ms: u32) -> Result<()> {
+        if self.local_active() {
+            self.local().seek(position_ms);
+            return Ok(());
+        }
         self.engine()?.router.request_seek(position_ms);
         Ok(())
     }
 
-    /// 0..=100. Shown immediately in `state()`; rapid calls collapse into the latest.
-    pub fn set_volume(&self, percent: u8) -> Result<()> {
-        self.engine()?.router.request_volume(percent);
+    /// Shared playback volume (0-100): the same value for Spotify and Local.
+    pub fn volume(&self) -> u8 {
+        self.config.volume
+    }
+
+    /// 0..=100. Stored (so it survives source switches and restarts) and applied
+    /// to whichever source is active. Persist with `save`.
+    pub fn set_volume(&mut self, percent: u8) -> Result<()> {
+        self.config.volume = percent.min(100);
+        self.apply_volume();
         Ok(())
     }
 
-    pub fn volume_up(&self) -> Result<()> {
-        let current = self.state().volume;
-        self.engine()?.router.request_volume_step(current, true);
+    pub fn volume_up(&mut self) -> Result<()> {
+        self.config.volume = self.config.volume.saturating_add(LOCAL_VOLUME_STEP).min(100);
+        self.apply_volume();
         Ok(())
     }
 
-    pub fn volume_down(&self) -> Result<()> {
-        let current = self.state().volume;
-        self.engine()?.router.request_volume_step(current, false);
+    pub fn volume_down(&mut self) -> Result<()> {
+        self.config.volume = self.config.volume.saturating_sub(LOCAL_VOLUME_STEP);
+        self.apply_volume();
         Ok(())
+    }
+
+    /// Pushes the stored volume to the active source.
+    fn apply_volume(&self) {
+        let v = self.config.volume;
+        if self.local_active() {
+            self.local().set_volume(v);
+        } else if let Some(engine) = &self.engine {
+            engine.router.request_volume(v);
+        }
     }
 
     // ---- settings (iPod Settings menu) ----

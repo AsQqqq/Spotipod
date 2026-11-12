@@ -81,6 +81,14 @@ pub enum Cmd {
     InstallUpdate {
         version: String,
     },
+    /// Scan the Local Music folder and send its playlists.
+    LocalScan,
+    /// Let the user pick a new Local Music folder, then rescan.
+    LocalPickFolder,
+    /// Remember the source the user navigated into ("spotify" | "local").
+    SetSource {
+        source: String,
+    },
     /// Window closing: stop cleanly.
     #[serde(skip)]
     Quit,
@@ -126,6 +134,10 @@ struct Data {
     liked: Option<String>,
     /// Track lists by context URI.
     lists: HashMap<String, TrackList>,
+    /// Local Music grouped into playlists (the last scan).
+    local_playlists: Vec<spotipod_core::local::LocalPlaylist>,
+    /// Source to restore on launch ("spotify" | "local").
+    last_source: Option<String>,
     /// Lists being fetched (open or warm-up), so each is fetched once.
     fetching: HashSet<String>,
     /// Bumped on logout; fetches of an older session are dropped.
@@ -244,9 +256,11 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Cmd>, sink: Sink) {
     let mut events = sp.subscribe();
     let settings = sp.settings();
     let ui_scale = sp.ui_scale();
+    let last_source = sp.last_source().map(str::to_owned);
     ctx.update(|d| {
         d.settings = settings;
         d.ui_scale = ui_scale;
+        d.last_source = last_source;
     });
 
     // The loading screen is already up; now auth.
@@ -271,8 +285,28 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Cmd>, sink: Sink) {
     let (login_tx, mut login_rx) = mpsc::unbounded_channel::<std::result::Result<String, String>>();
     let mut login_task: Option<tokio::task::JoinHandle<()>> = None;
 
+    // Local playback advances on its own audio thread (no events), so poll its
+    // state while it is the active source to reflect position and track changes.
+    let mut local_poll = tokio::time::interval(Duration::from_millis(500));
+
+    // The shared volume is changed on every wheel step; persist it debounced.
+    let mut volume_save = tokio::time::interval(Duration::from_secs(2));
+    let mut saved_volume = sp.volume();
+
     loop {
         tokio::select! {
+            _ = local_poll.tick() => {
+                if sp.local_active() {
+                    let state = sp.state();
+                    ctx.update(|d| d.playback = state);
+                }
+            }
+            _ = volume_save.tick() => {
+                if sp.volume() != saved_volume {
+                    saved_volume = sp.volume();
+                    ctx.report(sp.save());
+                }
+            }
             cmd = rx.recv() => match cmd {
                 Some(Cmd::Quit) | None => break,
                 Some(Cmd::Login) => {
@@ -358,23 +392,31 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Cmd>, sink: Sink) {
             }
         }
     }
+    let _ = sp.save();
     sp.stop().await;
 }
 
-/// Auth done: preload behind the loading screen, then show the menu.
+/// Auth done: show the menu immediately, then load the Spotify library in the
+/// background (so a slow or stalled library fetch never blocks the UI on boot).
 async fn on_ready(ctx: &Arc<Ctx>, sp: &mut Spotipod) {
-    ctx.update(|d| d.phase = Phase::Preparing);
     refresh_outputs(ctx, sp);
-    if let Some(library) = ctx.report(sp.library()) {
-        ctx.update(|d| d.library = Some(library.clone()));
-        preload(ctx, sp, &library).await;
-    }
+    let library = ctx.report(sp.library());
+    let liked_uri = sp.liked_songs_uri().ok();
     let state = sp.state();
     ctx.update(|d| {
+        if let Some(library) = &library {
+            d.library = Some(library.clone());
+        }
         d.playback = state;
         d.phase = Phase::Ready;
     });
-    tokio::spawn(warm_up(ctx.clone()));
+    if let Some(library) = library {
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            preload(&ctx, &library, liked_uri).await;
+            warm_up(ctx).await;
+        });
+    }
 }
 
 /// Back to the login item, showing why (the last status, e.g. an error).
@@ -405,7 +447,7 @@ async fn fetch_list(
 
 /// Only what the menus need: playlist and album lists and the liked count. Tracks load
 /// when a list opens, and in the background (`warm_up`). Failures are reported and skipped.
-async fn preload(ctx: &Ctx, sp: &Spotipod, library: &Library) {
+async fn preload(ctx: &Ctx, library: &Library, liked_uri: Option<String>) {
     let boot = Instant::now();
     // Full re-check launch: say so on the loading screen.
     let check = if library.is_refreshing() {
@@ -427,7 +469,7 @@ async fn preload(ctx: &Ctx, sp: &Spotipod, library: &Library) {
     }
 
     ctx.progress(format!("{check}Songs"));
-    if let Some(liked) = ctx.report(sp.liked_songs_uri()) {
+    if let Some(liked) = liked_uri {
         ctx.data.lock().unwrap().liked = Some(liked.clone());
         let started = Instant::now();
         if let Ok(count) = library.liked_count().await {
@@ -573,18 +615,34 @@ async fn handle(ctx: &Arc<Ctx>, sp: &mut Spotipod, cmd: Cmd) {
             });
             ctx.send_library();
         }
-        Cmd::Open { context, name } => open_list(ctx, name, context),
+        Cmd::Open { context, name } => {
+            if spotipod_core::local::is_local_uri(&context) {
+                open_local_list(ctx, name, context);
+            } else {
+                open_list(ctx, name, context);
+            }
+        }
         Cmd::More { context } => load_more(ctx, context),
         Cmd::Play { context, index } => {
-            let uri = {
-                let d = ctx.data.lock().unwrap();
-                d.lists
-                    .get(&context)
-                    .and_then(|l| l.tracks.get(index))
-                    .map(|t| t.uri.clone())
-            };
-            if let Some(uri) = uri {
-                ctx.report(sp.play_context(&context, Some(&uri)));
+            if spotipod_core::local::is_local_uri(&context) {
+                let tracks = {
+                    let d = ctx.data.lock().unwrap();
+                    d.lists.get(&context).map(|l| l.tracks.clone())
+                };
+                if let Some(tracks) = tracks {
+                    ctx.report(sp.play_local(tracks, index as u32));
+                }
+            } else {
+                let uri = {
+                    let d = ctx.data.lock().unwrap();
+                    d.lists
+                        .get(&context)
+                        .and_then(|l| l.tracks.get(index))
+                        .map(|t| t.uri.clone())
+                };
+                if let Some(uri) = uri {
+                    ctx.report(sp.play_context(&context, Some(&uri)));
+                }
             }
         }
         Cmd::PlayPause => _ = ctx.report(sp.play_pause()),
@@ -616,8 +674,100 @@ async fn handle(ctx: &Arc<Ctx>, sp: &mut Spotipod, cmd: Cmd) {
         }
         Cmd::CheckForUpdates => check_for_updates(ctx.clone()),
         Cmd::InstallUpdate { version } => install_update(ctx.clone(), version),
+        Cmd::LocalScan => {
+            let have = !ctx.data.lock().unwrap().local_playlists.is_empty();
+            if have {
+                send_local_playlists(ctx);
+            } else {
+                let dir = sp.local_dir();
+                scan_local(ctx.clone(), dir);
+            }
+        }
+        Cmd::LocalPickFolder => {
+            if let Some(dir) = pick_folder().await {
+                ctx.report(sp.set_local_dir(dir.clone()));
+                scan_local(ctx.clone(), Some(std::path::PathBuf::from(dir)));
+            }
+        }
+        Cmd::SetSource { source } => {
+            ctx.update(|d| d.last_source = Some(source.clone()));
+            ctx.report(sp.set_last_source(source));
+        }
         Cmd::Quit => {}
     }
+}
+
+/// Scans `dir` into playlists off the async runtime, then sends them to the UI.
+fn scan_local(ctx: Arc<Ctx>, dir: Option<std::path::PathBuf>) {
+    tokio::spawn(async move {
+        log::info!("local: scanning {dir:?}");
+        let started = Instant::now();
+        let playlists = match dir {
+            Some(dir) => {
+                tokio::task::spawn_blocking(move || spotipod_core::local::scan_grouped(&dir))
+                    .await
+                    .unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
+        log::info!(
+            "local: scan done, {} playlists in {:?}",
+            playlists.len(),
+            started.elapsed()
+        );
+        {
+            let mut d = ctx.data.lock().unwrap();
+            // Drop cached track lists so re-opened playlists reflect the new scan.
+            d.lists.retain(|k, _| !spotipod_core::local::is_local_uri(k));
+            d.local_playlists = playlists;
+        }
+        send_local_playlists(&ctx);
+    });
+}
+
+/// Shows a native folder chooser (macOS) and returns the picked path.
+async fn pick_folder() -> Option<String> {
+    tokio::task::spawn_blocking(|| {
+        #[cfg(target_os = "macos")]
+        {
+            let out = std::process::Command::new("osascript")
+                .args([
+                    "-e",
+                    "POSIX path of (choose folder with prompt \"Choose your music folder\")",
+                ])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None; // user cancelled
+            }
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            (!path.is_empty()).then_some(path)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Sends the current Local Music playlists (names + counts) to the UI.
+fn send_local_playlists(ctx: &Ctx) {
+    let d = ctx.data.lock().unwrap();
+    let playlists: Vec<Value> = d
+        .local_playlists
+        .iter()
+        .map(|p| json!({ "id": p.id, "name": p.name, "count": p.tracks.len() }))
+        .collect();
+    let total: usize = d.local_playlists.iter().map(|p| p.tracks.len()).sum();
+    drop(d);
+    ctx.send(json!({
+        "type": "local_playlists",
+        "playlists": playlists,
+        "total": total,
+    }));
 }
 
 #[cfg(target_os = "macos")]
@@ -1228,6 +1378,50 @@ mod tests {
 
 /// Sends a known list, or fetches it now (the page shows "Loading..." meanwhile). A list
 /// the warm-up is fetching is sent when that fetch is done.
+/// Builds a Local Music track list from the last scan: `local:all` for everything,
+/// `local:pl:<id>` for one playlist (subfolder).
+fn open_local_list(ctx: &Arc<Ctx>, name: String, context: String) {
+    let (cached, tracks) = {
+        let d = ctx.data.lock().unwrap();
+        if let Some(list) = d.lists.get(&context) {
+            (Some(list.message(&context, 0)), Vec::new())
+        } else if context == "local:all" {
+            let all = d
+                .local_playlists
+                .iter()
+                .flat_map(|p| p.tracks.iter().cloned())
+                .collect();
+            (None, all)
+        } else if let Some(id) = context.strip_prefix("local:pl:") {
+            let tracks = d
+                .local_playlists
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.tracks.clone())
+                .unwrap_or_default();
+            (None, tracks)
+        } else {
+            (None, Vec::new())
+        }
+    };
+    if let Some(msg) = cached {
+        ctx.send(msg);
+        return;
+    }
+    let uris: Vec<String> = tracks.iter().map(|t| t.uri.clone()).collect();
+    let next = uris.len();
+    let list = TrackList {
+        name,
+        uris,
+        tracks,
+        next,
+        loading: false,
+    };
+    let msg = list.message(&context, 0);
+    ctx.data.lock().unwrap().lists.insert(context, list);
+    ctx.send(msg);
+}
+
 fn open_list(ctx: &Arc<Ctx>, name: String, context: String) {
     let msg = {
         let d = ctx.data.lock().unwrap();
@@ -1286,10 +1480,13 @@ fn track_json(t: &Track) -> Value {
         t.name.clone()
     };
 
-    let artist = if t.artists.is_empty() {
-        "Spotify".to_string()
-    } else {
+    let artist = if !t.artists.is_empty() {
         t.artists.join(", ")
+    } else if spotipod_core::local::is_local_uri(&t.uri) {
+        // Local files with no artist tag: leave it blank rather than "Spotify".
+        String::new()
+    } else {
+        "Spotify".to_string()
     };
 
     json!({
@@ -1323,6 +1520,7 @@ fn state_json(d: &Data) -> Value {
         },
         "settings": d.settings,
         "ui_scale": d.ui_scale,
+        "last_source": d.last_source,
         "about": d.about.as_ref().map(|a| json!({
             "songs": a.songs,
             "company": a.company,
