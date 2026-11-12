@@ -35,7 +35,7 @@ This isn't just another music player skin. It's an attempt to recreate the feeli
 
 SpotiPod is constantly evolving. Here are some of the features and improvements planned for future releases.
 
-- [ ] **Local Music Support** — Play local audio files directly through SpotiPod, without requiring Spotify.
+- [X] **Local Music Support** — Play local audio files directly through SpotiPod, without requiring Spotify.
 - [ ] **Additional Music Platforms** — Expand beyond Spotify and local music files by adding support for other music websites and platforms.
 - [ ] **Automatic Updates for Windows and Linux** — Extend the current macOS updater to download and install updates on Windows and Linux.
 
