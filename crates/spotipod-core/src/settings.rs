@@ -63,6 +63,53 @@ impl Backlight {
     }
 }
 
+/// Light / Dark appearance. `Auto` follows the operating system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
+
+/// iPod body / Click Wheel color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Shell {
+    #[default]
+    Silver,
+    Black,
+    Blue,
+    Pink,
+    Green,
+    Gold,
+}
+
+/// Screen (LCD) tint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Screen {
+    #[default]
+    Classic,
+    Blue,
+    Amber,
+    Green,
+}
+
+/// Selection / progress highlight color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Accent {
+    #[default]
+    Graphite,
+    Blue,
+    Red,
+    Green,
+    Pink,
+    Orange,
+}
+
 /// Persisted in config.toml under `[settings]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -75,6 +122,14 @@ pub struct Settings {
     pub clicker: bool,
     /// Click Wheel click sound volume (0-100%).
     pub clicker_volume: u8,
+    /// Appearance > Theme (Light / Dark / Auto).
+    pub theme_mode: ThemeMode,
+    /// Appearance > Color (iPod body / wheel).
+    pub shell: Shell,
+    /// Appearance > Screen (LCD tint).
+    pub screen: Screen,
+    /// Appearance > Accent (selection / progress color).
+    pub accent: Accent,
 }
 
 impl Default for Settings {
@@ -85,13 +140,17 @@ impl Default for Settings {
             backlight: Backlight::Off,
             clicker: true,
             clicker_volume: 100,
+            theme_mode: ThemeMode::Auto,
+            shell: Shell::Silver,
+            screen: Screen::Classic,
+            accent: Accent::Graphite,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Settings;
+    use super::{Accent, Screen, Settings, Shell, ThemeMode};
 
     #[test]
     fn older_settings_default_clicker_volume() {
@@ -99,6 +158,37 @@ mod tests {
 
         assert!(!settings.clicker);
         assert_eq!(settings.clicker_volume, 100);
+    }
+
+    #[test]
+    fn older_settings_default_appearance() {
+        // A config saved before the Appearance options existed.
+        let settings: Settings = serde_json::from_str(r#"{"clicker":true}"#).unwrap();
+
+        assert_eq!(settings.theme_mode, ThemeMode::Auto);
+        assert_eq!(settings.shell, Shell::Silver);
+        assert_eq!(settings.screen, Screen::Classic);
+        assert_eq!(settings.accent, Accent::Graphite);
+    }
+
+    #[test]
+    fn appearance_round_trips_through_json() {
+        let settings = Settings {
+            shell: Shell::Black,
+            screen: Screen::Amber,
+            accent: Accent::Blue,
+            theme_mode: ThemeMode::Dark,
+            ..Settings::default()
+        };
+
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains(r#""shell":"black""#));
+        assert!(json.contains(r#""screen":"amber""#));
+        assert!(json.contains(r#""accent":"blue""#));
+        assert!(json.contains(r#""theme_mode":"dark""#));
+
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, settings);
     }
 }
 
