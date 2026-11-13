@@ -1,4 +1,4 @@
 [platforms]
 macos = true
-windows = false
-linux = false
+windows = true
+linux = true
