@@ -9,8 +9,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
