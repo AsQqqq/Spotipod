@@ -131,6 +131,7 @@ jobs:
 
       - name: Build Windows or Linux binary
         if: matrix.platform != 'macos'
+        shell: bash
         env:
           TARGET: ${{ matrix.target }}
         run: cargo build --locked --release -p spotipod-gui --target "$TARGET"
